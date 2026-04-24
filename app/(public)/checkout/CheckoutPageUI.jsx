@@ -1,0 +1,2844 @@
+﻿"use client";
+
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import axios from "axios";
+import { countryCodes } from "@/assets/countryCodes";
+import { indiaStatesAndDistricts } from "@/assets/indiaStatesAndDistricts";
+import { uaeLocations } from "@/assets/uaeLocations";
+import { useSelector, useDispatch } from "react-redux";
+import { fetchAddress } from "@/lib/features/address/addressSlice";
+import { clearCart, addToCart, removeFromCart, deleteItemFromCart, uploadCart } from "@/lib/features/cart/cartSlice";
+import { fetchShippingSettings, calculateShipping } from "@/lib/shipping";
+import FbqInitiateCheckout from "@/components/FbqInitiateCheckout";
+import { trackMetaEvent } from "@/lib/metaPixelClient";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/useAuth";
+import { setTrackingStoreId, saveIdentitySnapshot, trackCustomerBehavior } from "@/lib/customerBehaviorTracking";
+import dynamic from "next/dynamic";
+import Link from "next/link";
+import Image from "next/image";
+import Creditimage1 from '../../../assets/creditcards/19 - Copy.webp';
+import Creditimage2 from '../../../assets/creditcards/16 - Copy.webp';
+import Creditimage3 from '../../../assets/creditcards/20.webp';
+import Creditimage4 from '../../../assets/creditcards/11.webp';
+import ApplePayIcon from '../../../assets/icons/apple-pay.png';
+import GooglePayIcon from '../../../assets/icons/google-pay.png';
+
+const SignInModal = dynamic(() => import("@/components/SignInModal"), { ssr: false });
+const AddressModal = dynamic(() => import("@/components/AddressModal"), { ssr: false });
+const PincodeModal = dynamic(() => import("@/components/PincodeModal"), { ssr: false });
+const PrepaidUpsellModal = dynamic(() => import("@/components/PrepaidUpsellModal"), { ssr: false });
+
+export default function CheckoutPage() {
+  const { user, loading: authLoading, getToken } = useAuth();
+  const dispatch = useDispatch();
+  const addressList = useSelector((state) => state.address?.list || []);
+  const addressFetchError = useSelector((state) => state.address?.error);
+  const { cartItems } = useSelector((state) => state.cart);
+  const products = useSelector((state) => state.product.list);
+
+  const [form, setForm] = useState({
+    addressId: "",
+    payment: "cod",
+    phoneCode: '+971',
+    country: 'United Arab Emirates',
+    state: '',
+    district: '',
+    street: '',
+    city: '',
+    pincode: '',
+    name: '',
+    email: '',
+    phone: '',
+    alternatePhone: '',
+    alternatePhoneCode: '+971',
+  });
+
+  // For India state/district dropdowns
+  const keralaDistricts = indiaStatesAndDistricts.find(s => s.state === 'Kerala')?.districts || [];
+  const uaeEmirates = uaeLocations.map(e => ({ value: e.emirate, label: e.label }));
+  const [districts, setDistricts] = useState(keralaDistricts);
+  const [placingOrder, setPlacingOrder] = useState(false);
+  const [payingNow, setPayingNow] = useState(false);
+  const [showPrepaidModal, setShowPrepaidModal] = useState(false);
+  const [upsellOrderId, setUpsellOrderId] = useState(null);
+  const [upsellOrderTotal, setUpsellOrderTotal] = useState(0);
+  const [navigatingToSuccess, setNavigatingToSuccess] = useState(false);
+  const [shippingSetting, setShippingSetting] = useState(null);
+  const [shipping, setShipping] = useState(0);
+  const [shippingMethod, setShippingMethod] = useState('standard'); // 'standard' or 'express'
+  const [showSignIn, setShowSignIn] = useState(false);
+  const [showAddressModal, setShowAddressModal] = useState(false);
+  const [showPincodeModal, setShowPincodeModal] = useState(false);
+  const [editingAddressId, setEditingAddressId] = useState(null);
+  const [showAlternatePhone, setShowAlternatePhone] = useState(false);
+  const [areaSearch, setAreaSearch] = useState('');
+  const [areaDropdownOpen, setAreaDropdownOpen] = useState(false);
+  const areaDropdownRef = useRef(null);
+  const [abandonSaved, setAbandonSaved] = useState(false);
+  const [checkoutAddon, setCheckoutAddon] = useState(null);
+  const [checkoutAddonLoading, setCheckoutAddonLoading] = useState(false);
+  const [addingCheckoutAddon, setAddingCheckoutAddon] = useState(false);
+
+  // Coupon logic
+  const [coupon, setCoupon] = useState("");
+  const [couponError, setCouponError] = useState("");
+  const [showCouponModal, setShowCouponModal] = useState(false);
+  const [availableCoupons, setAvailableCoupons] = useState([]);
+  const [appliedCoupon, setAppliedCoupon] = useState(null);
+  const [couponLoading, setCouponLoading] = useState(false);
+  const [storeId, setStoreId] = useState(null);
+  const bundleMigrationDoneRef = useRef(false);
+  const [formError, setFormError] = useState("");
+  const [walletSupport, setWalletSupport] = useState({ applePay: true, googlePay: true });
+  const checkoutVisitTrackedRef = useRef(false);
+  const identityCaptureTimerRef = useRef(null);
+  const checkoutEnteredAtRef = useRef(0);
+  const checkoutMaxScrollDepthRef = useRef(0);
+
+  useEffect(() => {
+    if (!areaDropdownOpen) return;
+
+    const handleClickOutside = (event) => {
+      if (areaDropdownRef.current && !areaDropdownRef.current.contains(event.target)) {
+        setAreaDropdownOpen(false);
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') setAreaDropdownOpen(false);
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [areaDropdownOpen]);
+
+  const pushDataLayerEvent = (event, ecommerce) => {
+    if (typeof window === 'undefined') return;
+    window.dataLayer = window.dataLayer || [];
+    window.dataLayer.push({ event, ecommerce });
+  };
+
+  const cleanDigits = (value) => (value ? String(value).replace(/\D/g, '') : '');
+  const sanitizePincode = (value) => cleanDigits(value).trim();
+  const isZeroOnlyPincode = (value) => /^0+$/.test(String(value || '').trim());
+  const isIndiaCountry = (value) => String(value || '').trim().toLowerCase() === 'india';
+  const hasValidPhone = (value) => /^[0-9]{7,15}$/.test(cleanDigits(value));
+  const isStripePaymentOption = (value) => ['card', 'applepay', 'googlepay'].includes(String(value || '').toLowerCase());
+  const pickValidPincode = (...values) => {
+    for (const value of values) {
+      const normalized = sanitizePincode(value);
+      if (normalized && !isZeroOnlyPincode(normalized)) return normalized;
+    }
+    return '';
+  };
+
+  // computeLineTotal: stored price for bundles is the bundle total, so divide by bundleQty to get per-unit
+  const computeLineTotal = (price, quantity, bundleQty) => {
+    const numericPrice = Number(price) || 0;
+    const numericQty = Number(quantity) || 0;
+    const numericBundleQty = Number(bundleQty) || 0;
+    if (numericBundleQty > 1) {
+      return (numericPrice / numericBundleQty) * numericQty;
+    }
+    return numericPrice * numericQty;
+  };
+  
+  const handleApplyCoupon = async (e) => {
+    e.preventDefault();
+    if (!coupon.trim()) {
+      setCouponError("Enter a coupon code to see discount.");
+      return;
+    }
+
+    if (!isStripePaymentOption(form.payment)) {
+      setCouponError('Coupons are available only for online payments (Card/Apple Pay/Google Pay).');
+      return;
+    }
+    
+    if (!user) {
+      setCouponError("Please sign in to use coupons.");
+      setShowSignIn(true);
+      return;
+    }
+    
+    if (!storeId) {
+      setCouponError("Store information not loaded. Please refresh.");
+      return;
+    }
+    
+    setCouponLoading(true);
+    setCouponError("");
+    
+    try {
+      // Convert cartItems object to array
+      const cartItemsArray = Object.entries(cartItems || {}).map(([id, value]) => ({
+        productId: id,
+        quantity: typeof value === 'number' ? value : value?.quantity || 0,
+        variantId: typeof value === 'object' ? value?.variantId : undefined
+      }));
+      
+      // Calculate total for validation
+      const itemsTotal = cartItemsArray.reduce((sum, item) => {
+        const product = products.find((p) => String(p._id) === String(item.productId));
+        if (!product) return sum;
+        const entry = cartItems?.[item.productId];
+        const variantOptions = typeof entry === 'object' ? entry?.variantOptions : undefined;
+        const resolvedPrice = resolveCartUnitPrice(product, entry);
+                    return sum + computeLineTotal(resolvedPrice, item.quantity, variantOptions?.bundleQty);
+      }, 0);
+      
+      // Get current product IDs in cart
+      const cartProductIds = Object.keys(cartItems);
+      
+      console.log('Applying coupon:', coupon.toUpperCase());
+      console.log('Order total:', itemsTotal);
+      console.log('Cart products:', cartProductIds);
+      
+      const res = await fetch('/api/coupons', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: coupon.toUpperCase(),
+          storeId: storeId,
+          orderTotal: itemsTotal,
+          userId: user.uid,
+          cartProductIds: cartProductIds, // Send product IDs for product-specific validation
+        }),
+      });
+      
+      const data = await res.json();
+      
+      console.log('Coupon validation response:', data);
+      
+      if (res.ok && data.valid) {
+        console.log('✅ Coupon applied successfully!');
+        console.log('Discount amount:', data.coupon.discountAmount);
+        setAppliedCoupon(data.coupon);
+        setCouponError("");
+        setShowCouponModal(false);
+        setCoupon(''); // Clear input
+      } else {
+        console.error('❌ Coupon validation failed:', data.error);
+        setCouponError(data.error || "Invalid coupon code");
+        setAppliedCoupon(null);
+      }
+    } catch (error) {
+      console.error('Error applying coupon:', error);
+      setCouponError("Failed to apply coupon");
+      setAppliedCoupon(null);
+    } finally {
+      setCouponLoading(false);
+    }
+  };
+
+  const router = useRouter();
+
+  // Fetch only the products that are in the cart (fast targeted batch fetch)
+  useEffect(() => {
+    const cartKeys = Object.keys(cartItems || {}).filter((id) => {
+      const trimmed = id?.trim();
+      return trimmed && trimmed !== 'undefined' && trimmed !== 'null';
+    });
+    if (cartKeys.length === 0) return;
+
+    const missingIds = cartKeys.filter(
+      (id) => !products?.some((p) => String(p._id) === String(id))
+    );
+    if (missingIds.length === 0) return;
+
+    let ignore = false;
+    const loadCartProducts = async () => {
+      try {
+        const { data } = await axios.post('/api/products/batch', { productIds: missingIds });
+        if (ignore || !data?.products?.length) return;
+        const existing = new Set((products || []).map((p) => String(p._id)));
+        const merged = [...(products || [])];
+        data.products.forEach((p) => {
+          if (!existing.has(String(p._id))) merged.push(p);
+        });
+        dispatch({ type: 'product/setProduct', payload: merged });
+      } catch (e) {
+        console.warn('Cart product fetch failed:', e.message);
+      }
+    };
+    loadCartProducts();
+    return () => { ignore = true; };
+  }, [cartItems, dispatch]);
+
+  // Capture abandoned checkout (debounced)
+  useEffect(() => {
+    if (placingOrder || payingNow) return;
+    const cartEntries = Object.entries(cartItems || {});
+    if (cartEntries.length === 0) return;
+
+    const timer = setTimeout(async () => {
+      try {
+        const items = cartEntries.map(([id, value]) => {
+          const quantity = typeof value === 'number' ? value : value?.quantity || 0;
+          const product = products.find((p) => p._id === id);
+          const price = resolveCartUnitPrice(product, value);
+          return {
+            productId: id,
+            quantity,
+            price,
+            name: product?.name || 'Product',
+            variantOptions: typeof value === 'object' ? value?.variantOptions || null : null,
+          };
+        }).filter(it => it.quantity > 0);
+
+        if (items.length === 0) return;
+
+        const cartTotal = items.reduce((sum, it) => sum + computeLineTotal(it.price, it.quantity, it.variantOptions?.bundleQty), 0);
+
+        const payload = {
+          items,
+          cartTotal,
+          currency: process.env.NEXT_PUBLIC_CURRENCY_SYMBOL || 'AED',
+          userId: user?.uid || null,
+          customer: {
+            name: form.name || null,
+            email: form.email || user?.email || null,
+            phone: form.phone || null,
+            address: {
+              country: form.country,
+              state: form.state,
+              district: form.district,
+              city: form.city,
+              street: form.street,
+              pincode: form.pincode,
+            },
+          },
+        };
+
+        await fetch('/api/abandoned-checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        });
+
+        setAbandonSaved(true);
+      } catch (e) {
+        // Silent fail
+      }
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [form, cartItems, products, user, placingOrder, payingNow]);
+
+  // Fetch addresses for logged-in users
+  useEffect(() => {
+    if (user && getToken) {
+      dispatch(fetchAddress({ getToken }));
+    }
+  }, [user, getToken, dispatch]);
+  
+  // Fetch available coupons
+  useEffect(() => {
+    const fetchCoupons = async () => {
+      try {
+        console.log('=== COUPON FETCH START ===');
+        
+        // Try to fetch store info first to get storeId
+        console.log('Fetching store info...');
+        const storeRes = await fetch('/api/store-info');
+        
+        if (!storeRes.ok) {
+          console.error('Store-info API returned status:', storeRes.status);
+          const storeResText = await storeRes.text();
+          console.error('Store-info response:', storeResText.substring(0, 200));
+          return;
+        }
+        
+        let storeData;
+        try {
+          storeData = await storeRes.json();
+        } catch (parseError) {
+          console.error('Failed to parse store-info response:', parseError);
+          return;
+        }
+        
+        console.log('Store data response:', storeData);
+        
+        if (!storeData.store || !storeData.store._id) {
+          console.error('Failed to get store ID from store-info, trying debug endpoint...');
+          
+          // Fallback: try debug endpoint to see what's happening
+          const debugRes = await fetch('/api/coupons-debug');
+          if (!debugRes.ok) {
+            console.error('Coupons-debug API returned status:', debugRes.status);
+            return;
+          }
+          let debugData;
+          try {
+            debugData = await debugRes.json();
+          } catch (parseError) {
+            console.error('Failed to parse coupons-debug response:', parseError);
+            return;
+          }
+          console.log('Debug data:', debugData);
+          
+          return;
+        }
+        
+        const storeIdValue = storeData.store._id;
+        console.log('Store ID found:', storeIdValue);
+        setStoreId(storeIdValue);
+        
+        console.log('Fetching coupons for store:', storeIdValue);
+        const couponUrl = `/api/coupons?storeId=${storeIdValue}`;
+        console.log('Coupon URL:', couponUrl);
+        
+        const res = await fetch(couponUrl);
+        
+        if (!res.ok) {
+          console.error('Coupons API returned status:', res.status);
+          const resText = await res.text();
+          console.error('Coupons response:', resText.substring(0, 200));
+          setAvailableCoupons([]);
+          return;
+        }
+        
+        let data;
+        try {
+          data = await res.json();
+        } catch (parseError) {
+          console.error('Failed to parse coupons response:', parseError);
+          setAvailableCoupons([]);
+          return;
+        }
+        
+        console.log('Coupons API response:', data);
+        console.log('Response status:', res.status);
+        console.log('Coupons array:', data.coupons);
+        
+        if (data.coupons && Array.isArray(data.coupons)) {
+          console.log(`Found ${data.coupons.length} coupons`);
+          
+          if (data.coupons.length > 0) {
+            console.log('Setting available coupons:', data.coupons);
+            setAvailableCoupons(data.coupons);
+          } else {
+            console.log('Coupons array is empty - calling debug endpoint to check DB');
+            // Call debug endpoint to see what coupons actually exist
+            const debugRes = await fetch('/api/coupons-debug');
+            if (debugRes.ok) {
+              const debugData = await debugRes.json();
+              console.log('=== DEBUG INFO ===');
+              console.log('Total coupons in DB:', debugData.totalCoupons);
+              console.log('Store ID from DB:', debugData.storeId);
+              console.log('Requested Store ID:', storeIdValue);
+              console.log('All coupons:', debugData.coupons);
+              console.log('Active coupons:', debugData.activeCoupons);
+              console.log('==================');
+            }
+            setAvailableCoupons([]);
+          }
+        } else {
+          console.log('No coupons array in response');
+          setAvailableCoupons([]);
+        }
+        
+        console.log('=== COUPON FETCH END ===');
+      } catch (error) {
+        console.error('Error fetching coupons:', error);
+        console.error('Error details:', error.message || error);
+        setAvailableCoupons([]);
+      }
+    };
+    
+    // Add small delay to ensure page is ready
+    const timer = setTimeout(() => {
+      fetchCoupons();
+    }, 500);
+    
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Auto-select first address
+  useEffect(() => {
+    if (user && addressList.length > 0 && !form.addressId) {
+      const firstAddr = addressList[0];
+      
+      setForm((f) => {
+        // Try to get phone from: address -> user profile -> keep existing
+        const addressPhone = cleanDigits(firstAddr.phone);
+        const userPhone = cleanDigits(user?.phoneNumber || user?.phone);
+        const finalPhone = addressPhone || userPhone || f.phone || '';
+        const finalPincode = pickValidPincode(firstAddr.zip, firstAddr.pincode, f.pincode);
+        
+        console.log('Loading address - Phone sources:', {
+          addressPhone,
+          userPhone,
+          finalPhone,
+          currentFormPhone: f.phone,
+          addressHasPhone: !!firstAddr.phone,
+          userHasPhone: !!(user?.phoneNumber || user?.phone)
+        });
+        
+        return { 
+          ...f, 
+          addressId: firstAddr._id,
+          name: firstAddr.name || f.name,
+          email: firstAddr.email || f.email,
+          phone: finalPhone,
+          phoneCode: firstAddr.phoneCode || '+971',
+          alternatePhone: cleanDigits(firstAddr.alternatePhone),
+          alternatePhoneCode: firstAddr.alternatePhoneCode || '+971',
+          street: firstAddr.street || f.street,
+          city: firstAddr.city || f.city,
+          state: firstAddr.state || f.state,
+          district: firstAddr.district || f.district,
+          country: firstAddr.country || f.country,
+          pincode: finalPincode,
+        };
+      });
+    }
+  }, [user, addressList, form.addressId]);
+
+  // Auto-open pincode modal for guests without saved addresses or when no address is present
+  useEffect(() => {
+    if (!authLoading && !user && addressList.length === 0 && !form.pincode && isIndiaCountry(form.country || 'United Arab Emirates')) {
+      const timer = setTimeout(() => {
+        setShowPincodeModal(true);
+      }, 500); // Small delay for better UX
+      return () => clearTimeout(timer);
+    }
+  }, [authLoading, user, addressList, form.pincode, form.country]);
+
+  const handlePincodeSubmit = (pincodeData) => {
+    setForm(f => ({
+      ...f,
+      pincode: pincodeData.pincode,
+      city: pincodeData.city,
+      district: pincodeData.district,
+      state: pincodeData.state,
+      country: pincodeData.country
+    }));
+    // Update districts for the selected state
+    const stateObj = indiaStatesAndDistricts.find(s => s.state === pincodeData.state);
+    if (stateObj) {
+      setDistricts(stateObj.districts);
+    }
+  };
+
+  const handleAutoFillClick = async () => {
+    const pincode = form.pincode?.trim();
+    
+    // If pincode is already filled and valid, fetch directly
+    if (pincode && pincode.length === 6 && /^\d{6}$/.test(pincode)) {
+      try {
+        const response = await fetch(`https://api.postalpincode.in/pincode/${pincode}`);
+        const data = await response.json();
+
+        if (data[0]?.Status === "Success" && data[0]?.PostOffice?.length > 0) {
+          const postOffice = data[0].PostOffice[0];
+          handlePincodeSubmit({
+            pincode: pincode,
+            city: postOffice.Name || postOffice.Region || postOffice.Division,
+            district: postOffice.District,
+            state: postOffice.State,
+            country: "India"
+          });
+          toast.success("Address auto-filled successfully!");
+        } else {
+          toast.error("Invalid pincode. Please enter a valid pincode.");
+        }
+      } catch (err) {
+        toast.error("Failed to fetch pincode details. Please try again.");
+      }
+    } else {
+      // Open modal if pincode is empty or invalid
+      setShowPincodeModal(true);
+    }
+  };
+
+  const handleDeleteAddress = async (addressId) => {
+    const confirmed = window.confirm("Are you sure you want to delete this address? This action cannot be undone.");
+    if (!confirmed) return;
+
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/address/${addressId}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (res.ok) {
+        // Refresh address list
+        dispatch(fetchAddress({ getToken }));
+        setFormError("");
+      } else {
+        const error = await res.json();
+        setFormError(error.message || "Failed to delete address");
+      }
+    } catch (error) {
+      setFormError("Failed to delete address. Please try again.");
+    }
+  };
+
+  // Build cart array
+  const cartArray = [];
+  const isPurchasableProduct = (product) => {
+    if (!product) return false;
+    if (product.inStock === false) return false;
+    if (Array.isArray(product.variants) && product.variants.length > 0) {
+      const hasVariantStock = product.variants.some((v) => Number(v?.stock || 0) > 0);
+      if (hasVariantStock) return true;
+    }
+    if (typeof product.stockQuantity === 'number' && product.stockQuantity <= 0) return false;
+    return true;
+  };
+  console.log('Checkout - Cart Items:', cartItems);
+  console.log('Checkout - Products:', products?.map(p => ({ id: p._id, name: p.name })));
+
+  const resolveCartUnitPrice = (product, cartEntry) => {
+    const variantOptions = typeof cartEntry === 'object' ? cartEntry?.variantOptions : undefined;
+    if (product && variantOptions && Array.isArray(product.variants) && product.variants.length > 0) {
+      const { color, size, bundleQty } = variantOptions || {};
+      const match = product.variants.find((variant) => {
+        const colorMatches = variant.options?.color ? variant.options.color === color : !color;
+        const sizeMatches = variant.options?.size ? variant.options.size === size : !size;
+        const bundleMatches = variant.options?.bundleQty ? Number(variant.options.bundleQty) === Number(bundleQty) : !bundleQty;
+        return colorMatches && sizeMatches && bundleMatches;
+      });
+
+      const matchedPrice = Number(match?.price);
+      if (Number.isFinite(matchedPrice) && matchedPrice > 0) {
+        return matchedPrice; // bundle total price, not divided
+      }
+    }
+
+    // Fallback to stored override (for non-variant entries or older cart rows)
+    const priceOverride = typeof cartEntry === 'number' ? undefined : cartEntry?.price;
+    const parsedOverride = Number(priceOverride);
+    if (Number.isFinite(parsedOverride) && parsedOverride > 0) {
+      return parsedOverride;
+    }
+
+    return Number(product?.salePrice ?? product?.price ?? 0) || 0;
+  };
+
+  useEffect(() => {
+    if (bundleMigrationDoneRef.current) return;
+
+    const migrations = [];
+    for (const [key, value] of Object.entries(cartItems || {})) {
+      if (typeof value !== 'object' || value === null) continue;
+      const qty = Number(value?.quantity || 0);
+      const variantOptions = value?.variantOptions;
+      const bundleQty = Number(variantOptions?.bundleQty || 0);
+      const storedPrice = Number(value?.price);
+      if (qty <= 0 || bundleQty <= 1 || !Number.isFinite(storedPrice) || storedPrice <= 0) continue;
+
+      const product = products?.find((p) => String(p._id) === String(key));
+      if (!product || !Array.isArray(product.variants) || product.variants.length === 0) continue;
+
+      const match = product.variants.find((variant) => {
+        const colorMatches = variant.options?.color ? variant.options.color === variantOptions?.color : !variantOptions?.color;
+        const sizeMatches = variant.options?.size ? variant.options.size === variantOptions?.size : !variantOptions?.size;
+        const bundleMatches = variant.options?.bundleQty ? Number(variant.options.bundleQty) === bundleQty : false;
+        return colorMatches && sizeMatches && bundleMatches;
+      });
+
+      const variantBundlePrice = Number(match?.price);
+      if (!Number.isFinite(variantBundlePrice) || variantBundlePrice <= 0) continue;
+
+      const looksLikeLegacyPerUnit = Math.abs((storedPrice * bundleQty) - variantBundlePrice) < 0.01;
+      if (!looksLikeLegacyPerUnit) continue;
+
+      const normalizedBundleCount = Math.max(1, Math.round(qty / bundleQty));
+      migrations.push({
+        key,
+        payload: {
+          productId: key,
+          price: variantBundlePrice,
+          variantOptions,
+          ...(value?.offerToken ? { offerToken: value.offerToken } : {}),
+          ...(value?.discountPercent !== undefined ? { discountPercent: value.discountPercent } : {}),
+        },
+        count: normalizedBundleCount,
+      });
+    }
+
+    bundleMigrationDoneRef.current = true;
+    if (migrations.length === 0) return;
+
+    migrations.forEach((entry) => dispatch(deleteItemFromCart({ productId: entry.key })));
+    migrations.forEach((entry) => {
+      for (let i = 0; i < entry.count; i++) {
+        dispatch(addToCart(entry.payload));
+      }
+    });
+
+    if (user) {
+      dispatch(uploadCart({ getToken }));
+    }
+  }, [cartItems, products, dispatch, user, getToken]);
+  
+  for (const [key, value] of Object.entries(cartItems || {})) {
+    const product = products?.find((p) => String(p._id) === String(key));
+    const qty = typeof value === 'number' ? value : value?.quantity || 0;
+    if (product && qty > 0) {
+      if (isPurchasableProduct(product)) {
+        console.log('Found purchasable product for key:', key, product.name);
+        const unitPrice = resolveCartUnitPrice(product, value);
+        const variantOptions = typeof value === 'object' ? value?.variantOptions : undefined;
+        cartArray.push({ ...product, quantity: qty, _cartPrice: unitPrice, _cartKey: key, _variantOptions: variantOptions });
+      }
+    } else {
+      console.log('No product found for key:', key);
+    }
+  }
+  
+  console.log('Checkout - Final Cart Array:', cartArray);
+
+  const checkoutStoreId = useMemo(() => {
+    if (!cartArray.length) return '';
+    const firstWithStore = cartArray.find((item) => item?.storeId);
+    return String(firstWithStore?.storeId || '');
+  }, [cartItems, products]);
+
+  const cartDisplayItems = Object.entries(cartItems || {}).map(([key, value]) => {
+    const product = products?.find((p) => String(p._id) === String(key));
+    const quantity = typeof value === 'number' ? value : value?.quantity || 0;
+    const variantOptions = typeof value === 'object' ? value?.variantOptions : undefined;
+    let maxQty = typeof product?.stockQuantity === 'number' ? Math.max(0, product.stockQuantity) : null;
+
+    if (product && variantOptions && Array.isArray(product.variants) && product.variants.length > 0) {
+      const { color, size, bundleQty } = variantOptions || {};
+      const match = product.variants.find((v) => {
+        const cOk = v.options?.color ? v.options.color === color : !color;
+        const sOk = v.options?.size ? v.options.size === size : !size;
+        const bOk = v.options?.bundleQty ? Number(v.options.bundleQty) === Number(bundleQty) : !bundleQty;
+        return cOk && sOk && bOk;
+      });
+      if (match && typeof match.stock === 'number') {
+        const bundleStep = Math.max(1, Number(bundleQty || match.options?.bundleQty) || 1);
+        maxQty = Math.max(0, match.stock) * bundleStep;
+      }
+    }
+
+    const bulkVariants = Array.isArray(product?.variants)
+      ? product.variants.filter(v => v?.options?.bundleQty !== undefined && v?.options?.bundleQty !== null)
+      : [];
+
+    const sortedBvsForUnit = [...bulkVariants].sort((a, b) => Number(a.options.bundleQty) - Number(b.options.bundleQty));
+    const lowestTier = sortedBvsForUnit[0];
+    const baseUnitPrice = lowestTier
+      ? Number(lowestTier.price) / Math.max(1, Number(lowestTier.options.bundleQty))
+      : Number(typeof value === 'object' ? value?.price : 0) || Number(product?.price ?? 0);
+
+    return {
+      id: key,
+      name: product?.name || 'Product',
+      quantity,
+      image: product?.images?.[0] || '/placeholder.png',
+      bundleStep: Math.max(1, Number(variantOptions?.bundleQty) || 1),
+      maxQty,
+      exists: !!product,
+      bulkVariants,
+      variantOptions,
+      baseUnitPrice,
+    };
+  }).filter((item) => item.quantity > 0);
+
+  const checkoutOfferCartKey = useMemo(() => {
+    return cartArray
+      .map((item) => String(item?._id || item?._cartKey || ''))
+      .filter(Boolean)
+      .sort()
+      .join('|');
+  }, [cartItems, products]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCheckoutAddon = async () => {
+      if (!checkoutOfferCartKey) {
+        setCheckoutAddon(null);
+        setCheckoutAddonLoading(false);
+        return;
+      }
+
+      if (!checkoutAddon) {
+        setCheckoutAddonLoading(true);
+      }
+      const cartProductIds = new Set(
+        cartArray
+          .map((item) => String(item?._id || item?._cartKey || ''))
+          .filter(Boolean)
+      );
+
+      try {
+        for (const baseItem of cartArray) {
+          const baseId = String(baseItem?._id || baseItem?._cartKey || '');
+          if (!baseId) continue;
+
+          const res = await fetch(`/api/products/${baseId}/checkout-offer`);
+          if (!res.ok) continue;
+
+          const data = await res.json();
+          const discountPercent = Number(data?.discountPercent || 0);
+          const suggested = data?.product || null;
+          if (!data?.enableCheckoutOffer || !suggested || discountPercent <= 0) continue;
+
+          const suggestedId = String(suggested?._id || '');
+          if (!suggestedId || cartProductIds.has(suggestedId)) continue;
+          if (suggested?.inStock === false) continue;
+          if (typeof suggested?.stockQuantity === 'number' && suggested.stockQuantity <= 0) continue;
+
+          if (!suggested) continue;
+
+          const basePrice = Number(suggested?.price ?? suggested?.AED ?? 0) || 0;
+          const boundedDiscount = Math.max(0, Math.min(90, discountPercent));
+          const discountedPrice = Number((basePrice * (1 - boundedDiscount / 100)).toFixed(2));
+
+          if (!cancelled) {
+            setCheckoutAddon({
+              baseProductName: baseItem?.name || 'cart item',
+              product: suggested,
+              discountPercent: boundedDiscount,
+              basePrice,
+              discountedPrice,
+            });
+            setCheckoutAddonLoading(false);
+          }
+          return;
+        }
+
+        if (!cancelled) {
+          setCheckoutAddon(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setCheckoutAddon(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setCheckoutAddonLoading(false);
+        }
+      }
+    };
+
+    loadCheckoutAddon();
+    return () => {
+      cancelled = true;
+    };
+  }, [checkoutOfferCartKey]);
+
+  const syncCartForSignedIn = async () => {
+    if (!user) return;
+    await dispatch(uploadCart({ getToken }));
+  };
+
+  const handleAddCheckoutAddon = async () => {
+    const addonProductId = checkoutAddon?.product?._id;
+    if (!addonProductId || addingCheckoutAddon) return;
+
+    setAddingCheckoutAddon(true);
+    try {
+      dispatch(addToCart({
+        productId: addonProductId,
+        price: checkoutAddon.discountedPrice,
+        discountPercent: checkoutAddon.discountPercent,
+      }));
+      await syncCartForSignedIn();
+      setCheckoutAddon(null);
+    } finally {
+      setAddingCheckoutAddon(false);
+    }
+  };
+
+  // Helper: replace cart entry with a different bundle tier
+  const switchCheckoutBundle = (productId, targetBundle, existingEntry) => {
+    const targetQty = Number(targetBundle.options.bundleQty);
+    const targetPrice = Number(targetBundle.price);
+    const variantOptions = typeof existingEntry === 'object' ? existingEntry?.variantOptions : undefined;
+    const offerToken = typeof existingEntry === 'object' ? existingEntry?.offerToken : undefined;
+    const discountPercent = typeof existingEntry === 'object' ? existingEntry?.discountPercent : undefined;
+    dispatch(deleteItemFromCart({ productId }));
+    for (let i = 0; i < targetQty; i++) {
+      dispatch(addToCart({
+        productId,
+        price: targetPrice,
+        variantOptions: { ...variantOptions, bundleQty: targetQty },
+        ...(offerToken !== undefined ? { offerToken } : {}),
+        ...(discountPercent !== undefined ? { discountPercent } : {}),
+      }));
+    }
+  };
+
+  // Switch cart entry to non-bundle mode (qty above highest bundle tier, using per-unit price)
+  const switchCheckoutToNonBundle = (productId, newQty, bUnitPrice, existingEntry) => {
+    const variantOptions = typeof existingEntry === 'object' ? existingEntry?.variantOptions : undefined;
+    const offerToken = typeof existingEntry === 'object' ? existingEntry?.offerToken : undefined;
+    const discountPercent = typeof existingEntry === 'object' ? existingEntry?.discountPercent : undefined;
+    dispatch(deleteItemFromCart({ productId }));
+    for (let i = 0; i < newQty; i++) {
+      dispatch(addToCart({
+        productId,
+        price: bUnitPrice,
+        variantOptions: variantOptions ? { ...variantOptions, bundleQty: null } : undefined,
+        ...(offerToken !== undefined ? { offerToken } : {}),
+        ...(discountPercent !== undefined ? { discountPercent } : {}),
+      }));
+    }
+  };
+
+  const handleIncreaseCartQty = async (item) => {
+    const existingEntry = cartItems?.[item.id];
+    const bulkVariants = item.bulkVariants || [];
+    const currentBundleQty = Number(item.variantOptions?.bundleQty) || 0;
+    const isBundleProduct = bulkVariants.length > 0;
+    const isInBundleMode = isBundleProduct && currentBundleQty > 0;
+
+    if (isInBundleMode) {
+      const sorted = [...bulkVariants].sort((a, b) => Number(a.options.bundleQty) - Number(b.options.bundleQty));
+      const idx = sorted.findIndex(v => Number(v.options.bundleQty) === currentBundleQty);
+      if (idx >= sorted.length - 1) {
+        // At highest bundle tier — switch to non-bundle mode with qty+1
+        const highestQty = Number(sorted[sorted.length - 1].options.bundleQty);
+        switchCheckoutToNonBundle(item.id, highestQty + 1, item.baseUnitPrice, existingEntry);
+      } else {
+        switchCheckoutBundle(item.id, sorted[idx + 1], existingEntry);
+      }
+    } else {
+      if (typeof item.maxQty === 'number' && item.maxQty > 0 && item.quantity >= item.maxQty) return;
+      const preservedPrice = typeof existingEntry === 'object' ? existingEntry?.price : undefined;
+      const preservedVariantOptions = typeof existingEntry === 'object' ? existingEntry?.variantOptions : undefined;
+      const preservedOfferToken = typeof existingEntry === 'object' ? existingEntry?.offerToken : undefined;
+      const preservedDiscountPercent = typeof existingEntry === 'object' ? existingEntry?.discountPercent : undefined;
+      dispatch(addToCart({
+        productId: item.id,
+        ...(typeof item.maxQty === 'number' ? { maxQty: item.maxQty } : {}),
+        ...(preservedPrice !== undefined ? { price: preservedPrice } : {}),
+        ...(preservedVariantOptions !== undefined ? { variantOptions: preservedVariantOptions } : {}),
+        ...(preservedOfferToken !== undefined ? { offerToken: preservedOfferToken } : {}),
+        ...(preservedDiscountPercent !== undefined ? { discountPercent: preservedDiscountPercent } : {}),
+      }));
+    }
+    await syncCartForSignedIn();
+  };
+
+  const handleDecreaseCartQty = async (item) => {
+    const existingEntry = cartItems?.[item.id];
+    const bulkVariants = item.bulkVariants || [];
+    const currentBundleQty = Number(item.variantOptions?.bundleQty) || 0;
+    const isBundleProduct = bulkVariants.length > 0;
+    const isInBundleMode = isBundleProduct && currentBundleQty > 0;
+
+    if (isInBundleMode) {
+      const sorted = [...bulkVariants].sort((a, b) => Number(a.options.bundleQty) - Number(b.options.bundleQty));
+      const idx = sorted.findIndex(v => Number(v.options.bundleQty) === currentBundleQty);
+      if (idx <= 0) {
+        dispatch(deleteItemFromCart({ productId: item.id }));
+      } else {
+        switchCheckoutBundle(item.id, sorted[idx - 1], existingEntry);
+      }
+    } else {
+      // Non-bundle mode: check if qty-1 snaps back to a bundle tier
+      const newQty = item.quantity - 1;
+      if (isBundleProduct && newQty > 0) {
+        const sorted = [...bulkVariants].sort((a, b) => Number(a.options.bundleQty) - Number(b.options.bundleQty));
+        const matchingBundle = sorted.find(b => Number(b.options.bundleQty) === newQty);
+        if (matchingBundle) {
+          switchCheckoutBundle(item.id, matchingBundle, existingEntry);
+          await syncCartForSignedIn();
+          return;
+        }
+      }
+      if (newQty <= 0) {
+        dispatch(deleteItemFromCart({ productId: item.id }));
+      } else {
+        dispatch(removeFromCart({ productId: item.id }));
+      }
+    }
+    await syncCartForSignedIn();
+  };
+
+  const handleDeleteCartItem = async (item) => {
+    dispatch(deleteItemFromCart({ productId: item.id }));
+    await syncCartForSignedIn();
+  };
+
+  const stockIssues = [];
+  for (const [key, value] of Object.entries(cartItems || {})) {
+    const product = products?.find((p) => String(p._id) === String(key));
+    const requestedQty = Math.min(Number(typeof value === 'number' ? value : value?.quantity || 0), 20);
+    if (!product || requestedQty <= 0) continue;
+
+    const variantOptions = typeof value === 'object' ? value?.variantOptions : undefined;
+    let availableQty = typeof product.stockQuantity === 'number' ? product.stockQuantity : Number.MAX_SAFE_INTEGER;
+
+    if (variantOptions && Array.isArray(product.variants) && product.variants.length > 0) {
+      const { color, size, bundleQty } = variantOptions || {};
+      const match = product.variants.find((v) => {
+        const cOk = v.options?.color ? v.options.color === color : !color;
+        const sOk = v.options?.size ? v.options.size === size : !size;
+        const bOk = v.options?.bundleQty ? Number(v.options.bundleQty) === Number(bundleQty) : !bundleQty;
+        return cOk && sOk && bOk;
+      });
+
+      if (!match) continue;
+
+      if (typeof match.stock === 'number') {
+        const bundleStep = Math.max(1, Number(bundleQty || match.options?.bundleQty) || 1);
+        availableQty = Math.max(0, match.stock) * bundleStep;
+      }
+    }
+
+    if (product.inStock === false) {
+      stockIssues.push({ id: key, name: product.name || 'Product', reason: 'Out of stock' });
+      continue;
+    }
+
+    if ((!variantOptions || availableQty === Number.MAX_SAFE_INTEGER) && Array.isArray(product.variants) && product.variants.length > 0) {
+      const hasAnyVariantStock = product.variants.some((v) => Number(v?.stock || 0) > 0);
+      if (hasAnyVariantStock) {
+        continue;
+      }
+    }
+
+    if (availableQty <= 0) {
+      stockIssues.push({ id: key, name: product.name || 'Product', reason: 'Out of stock' });
+      continue;
+    }
+
+    if (availableQty < requestedQty) {
+      stockIssues.push({
+        id: key,
+        name: product.name || 'Product',
+        reason: `Only ${availableQty} left (you selected ${requestedQty})`
+      });
+    }
+  }
+
+  const hasStockIssues = stockIssues.length > 0;
+
+  const subtotal = cartArray.reduce(
+    (sum, item) => sum + computeLineTotal((item._cartPrice ?? item.price ?? 0), item.quantity, item._variantOptions?.bundleQty),
+    0
+  );
+  
+  // Calculate coupon discount
+  const couponDiscountRaw = Number(appliedCoupon?.discountAmount || 0);
+  const couponDiscount = Number.isFinite(couponDiscountRaw) ? Number(couponDiscountRaw.toFixed(2)) : 0;
+  const totalAfterCoupon = Math.max(0, subtotal - couponDiscount);
+  
+  const total = totalAfterCoupon + shipping;
+  const totalAfterWallet = total;
+  const needsPaymentSelection = totalAfterWallet > 0;
+  const maxCODAmount = shippingSetting?.maxCODAmount || 0;
+  const hasPersonalizedOfferItem = Object.values(cartItems || {}).some(
+    (entry) => typeof entry === 'object' && !!entry?.offerToken
+  );
+  
+  // Check if any product in cart has disabled payment methods
+  const hasProductWithCODDisabled = cartArray.some(item => {
+    const codEnabled = item.codEnabled ?? true; // Default to true if undefined
+    return codEnabled === false;
+  });
+  
+  const hasProductWithOnlinePaymentDisabled = cartArray.some(item => {
+    const onlineEnabled = item.onlinePaymentEnabled ?? true; // Default to true if undefined
+    return onlineEnabled === false;
+  });
+
+  // MUTUAL EXCLUSION: Both payment methods cannot be disabled at the same time
+  // If a product has both flags disabled, treat it as an error and enable online payment as fallback
+  const problematicProducts = cartArray.filter(item => 
+    (item.codEnabled === false) && (item.onlinePaymentEnabled === false)
+  );
+  
+  console.log('[CHECKOUT] Payment flags check:', {
+    hasProductWithCODDisabled,
+    hasProductWithOnlinePaymentDisabled,
+    problematicProducts: problematicProducts.map(p => ({ name: p.name, codEnabled: p.codEnabled, onlinePaymentEnabled: p.onlinePaymentEnabled }))
+  });
+  
+  const isCODDisabledForOrder =
+    hasPersonalizedOfferItem ||
+    hasProductWithCODDisabled ||
+    shippingSetting?.enableCOD === false ||
+    (maxCODAmount > 0 && totalAfterWallet > maxCODAmount);
+  
+  const isOnlinePaymentDisabledForOrder = hasProductWithOnlinePaymentDisabled;
+  
+  // Emergency fallback: if both are disabled due to product misconfiguration, force online payment enabled
+  const bothDisabledForOrder = isCODDisabledForOrder && isOnlinePaymentDisabledForOrder;
+  const actuallyOnlineDisabledForOrder = bothDisabledForOrder ? false : isOnlinePaymentDisabledForOrder;
+  
+  const isPaymentMissing = needsPaymentSelection && !form.payment;
+  const isInvalidPaymentSelection = (form.payment === 'cod' && isCODDisabledForOrder) || 
+                                     (isStripePaymentOption(form.payment) && actuallyOnlineDisabledForOrder);
+  const isPlaceOrderDisabled = placingOrder || isPaymentMissing || isInvalidPaymentSelection || hasStockIssues;
+  const selectedAddressForView = form.addressId ? addressList.find((a) => a._id === form.addressId) : null;
+  const shouldShowPhoneRequired =
+    !!user &&
+    addressList.length > 0 &&
+    !!form.addressId &&
+    !hasValidPhone(form.phone) &&
+    !hasValidPhone(selectedAddressForView?.phone) &&
+    !hasValidPhone(user?.phoneNumber || user?.phone);
+  const isPincodeError = /pincode/i.test(String(formError || ''));
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const ua = window.navigator.userAgent || '';
+    const isMac = /Macintosh|Mac OS X/.test(ua);
+    const isIOS = /iPhone|iPad|iPod/.test(ua);
+    const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|Edg|OPR|SamsungBrowser/.test(ua);
+    const isAndroid = /Android/.test(ua);
+    const isChrome = /Chrome|CriOS/.test(ua) && !/Edg|OPR|SamsungBrowser/.test(ua);
+
+    setWalletSupport({
+      applePay: (isSafari && (isMac || isIOS)),
+      googlePay: (isAndroid || isChrome),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (form.payment === 'applepay' && !walletSupport.applePay) {
+      setForm((f) => ({ ...f, payment: 'card' }));
+    }
+    if (form.payment === 'googlepay' && !walletSupport.googlePay) {
+      setForm((f) => ({ ...f, payment: 'card' }));
+    }
+  }, [form.payment, walletSupport.applePay, walletSupport.googlePay]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (cartArray.length === 0) return;
+
+    const orderKey = cartArray
+      .map((item) => `${String(item?._id || item?._cartKey || '')}:${Number(item?.quantity || 0)}`)
+      .join('|');
+    const eventKey = `gtm_begin_checkout_${orderKey}`;
+    if (sessionStorage.getItem(eventKey)) return;
+
+    pushDataLayerEvent('begin_checkout', {
+      currency: 'AED',
+      value: Number(totalAfterWallet || 0),
+      items: cartArray.map((item) => ({
+        item_id: String(item?._id || item?._cartKey || ''),
+        item_name: item?.name || 'Product',
+        price: Number(item?._cartPrice ?? item?.price ?? 0),
+        quantity: Number(item?.quantity || 0),
+      })),
+    });
+
+    sessionStorage.setItem(eventKey, '1');
+  }, [cartArray, totalAfterWallet]);
+
+  useEffect(() => {
+    if (checkoutStoreId) {
+      setTrackingStoreId(checkoutStoreId);
+    }
+  }, [checkoutStoreId]);
+
+  useEffect(() => {
+    if (!checkoutStoreId || checkoutVisitTrackedRef.current) return;
+    checkoutVisitTrackedRef.current = true;
+    checkoutEnteredAtRef.current = Date.now();
+
+    const updateScrollDepth = () => {
+      const doc = document.documentElement;
+      const scrollTop = window.scrollY || doc.scrollTop || 0;
+      const maxScrollable = Math.max((doc.scrollHeight || 0) - (window.innerHeight || 0), 1);
+      const depth = Math.min(100, Math.max(0, (scrollTop / maxScrollable) * 100));
+      if (depth > checkoutMaxScrollDepthRef.current) {
+        checkoutMaxScrollDepthRef.current = depth;
+      }
+    };
+
+    window.addEventListener('scroll', updateScrollDepth, { passive: true });
+    updateScrollDepth();
+
+    trackCustomerBehavior({
+      eventType: 'checkout_visit',
+      storeId: checkoutStoreId,
+      nextAction: 'checkout_open',
+    }, { user });
+
+    return () => {
+      window.removeEventListener('scroll', updateScrollDepth);
+      const durationMs = Math.max(0, Date.now() - (checkoutEnteredAtRef.current || Date.now()));
+
+      trackCustomerBehavior({
+        eventType: 'checkout_visit',
+        storeId: checkoutStoreId,
+        durationMs,
+        scrollDepthPercent: Math.round(checkoutMaxScrollDepthRef.current || 0),
+        nextAction: 'checkout_exit',
+      }, { user });
+    };
+  }, [checkoutStoreId, user]);
+
+  useEffect(() => {
+    if (!checkoutStoreId) return;
+    if (identityCaptureTimerRef.current) {
+      clearTimeout(identityCaptureTimerRef.current);
+    }
+
+    const selectedAddr = (form.addressId && addressList.find((a) => a._id === form.addressId)) || null;
+    const identity = {
+      userId: user?.uid || '',
+      customerName: form.name || selectedAddr?.name || user?.displayName || '',
+      customerEmail: form.email || selectedAddr?.email || user?.email || '',
+      customerPhone: form.phone || selectedAddr?.phone || user?.phoneNumber || '',
+      customerAddress: [
+        form.street || selectedAddr?.street || '',
+        form.city || form.district || selectedAddr?.city || selectedAddr?.district || '',
+        form.state || selectedAddr?.state || '',
+        form.country || selectedAddr?.country || '',
+        form.pincode || selectedAddr?.zip || '',
+      ].filter(Boolean).join(', '),
+    };
+
+    identityCaptureTimerRef.current = setTimeout(() => {
+      saveIdentitySnapshot(identity);
+      trackCustomerBehavior({
+        eventType: 'checkout_visit',
+        storeId: checkoutStoreId,
+        nextAction: 'address_updated',
+      }, { user, identity });
+    }, 5000);
+
+    return () => {
+      if (identityCaptureTimerRef.current) {
+        clearTimeout(identityCaptureTimerRef.current);
+      }
+    };
+  }, [
+    checkoutStoreId,
+    form.addressId,
+    form.name,
+    form.email,
+    form.phone,
+    form.street,
+    form.city,
+    form.district,
+    form.state,
+    form.country,
+    form.pincode,
+    addressList,
+    user,
+  ]);
+
+  useEffect(() => {
+    if (hasPersonalizedOfferItem && form.payment === 'cod') {
+      setForm((f) => ({ ...f, payment: 'card' }));
+    }
+  }, [hasPersonalizedOfferItem, form.payment]);
+
+  useEffect(() => {
+    if (appliedCoupon && !isStripePaymentOption(form.payment)) {
+      setAppliedCoupon(null);
+      setCoupon('');
+      setCouponError('Coupons are available only for online payments (Card/Apple Pay/Google Pay).');
+    }
+  }, [appliedCoupon, form.payment]);
+
+  // Meta Pixel: AddPaymentInfo when payment method is selected on checkout
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!form.payment) return;
+    if (cartArray.length === 0) return;
+
+    const contentIds = cartArray
+      .map((item) => String(item?._id || item?._cartKey || ''))
+      .filter(Boolean);
+
+    if (contentIds.length === 0) return;
+
+    const eventKey = `meta_add_payment_info_${form.payment}_${contentIds.join(',')}_${Number(totalAfterWallet || 0)}`;
+    if (sessionStorage.getItem(eventKey)) return;
+
+    trackMetaEvent('AddPaymentInfo', {
+      value: Number(totalAfterWallet || 0),
+      currency: 'AED',
+      content_type: 'product',
+      content_ids: contentIds,
+      num_items: cartArray.reduce((sum, item) => sum + Number(item?.quantity || 0), 0),
+      payment_method: String(form.payment).toUpperCase(),
+    });
+
+    sessionStorage.setItem(eventKey, '1');
+  }, [form.payment, cartArray, totalAfterWallet]);
+
+  // Load shipping settings - refetch on page load and when products change
+  useEffect(() => {
+    async function loadShipping() {
+      const setting = await fetchShippingSettings();
+      setShippingSetting(setting);
+      console.log('Shipping settings loaded:', setting);
+    }
+    loadShipping();
+  }, [products]); // Refetch when products load
+
+  // Calculate dynamic shipping based on settings
+  // Reset shipping method if express is selected but state is not Kerala
+  useEffect(() => {
+    if (shippingMethod === 'express' && shippingSetting?.enableExpressShipping) {
+      const normalizedState = String(form.state || '').trim().toLowerCase();
+      if (normalizedState !== 'kerala') {
+        setShippingMethod('standard');
+      }
+    }
+  }, [form.state, shippingSetting?.enableExpressShipping]);
+
+  useEffect(() => {
+    if (shippingSetting && cartArray.length > 0) {
+      const calculatedShipping = calculateShipping({ 
+        cartItems: cartArray, 
+        shippingSetting,
+        paymentMethod: form.payment === 'cod' ? 'COD' : 'CARD',
+        shippingState: form.state
+      });
+      let finalShipping = calculatedShipping;
+      // Add express fee if express shipping is selected
+      if (shippingMethod === 'express' && shippingSetting?.enableExpressShipping) {
+        finalShipping += Number(shippingSetting.expressShippingFee || 0);
+      }
+      setShipping(finalShipping);
+      console.log('Calculated shipping:', finalShipping, 'Base:', calculatedShipping, 'Method:', shippingMethod, 'Settings:', shippingSetting, 'Payment:', form.payment);
+    } else {
+      setShipping(0);
+    }
+  }, [shippingSetting, cartArray, form.payment, form.state, shippingMethod]);
+
+  // Redirect to shop when cart is empty (must be a top-level hook)
+  useEffect(() => {
+    if (!authLoading && (!cartItems || Object.keys(cartItems).length === 0) && !placingOrder && !showPrepaidModal) {
+      const timer = setTimeout(() => {
+        router.push('/shop');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [authLoading, cartItems, router, placingOrder, showPrepaidModal]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    if (name === 'state') {
+      // Update districts when state changes
+      const stateObj = indiaStatesAndDistricts.find(s => s.state === value);
+      setDistricts(stateObj ? stateObj.districts : []);
+      if (form.country === 'United Arab Emirates') {
+        setForm(f => ({ ...f, state: value, district: '', city: value }));
+      } else {
+        setForm(f => ({ ...f, state: value, district: '' }));
+      }
+      setAreaSearch(''); setAreaDropdownOpen(false);
+    } else if (name === 'country') {
+      setForm(f => ({ ...f, country: value, state: '', district: '', city: '', alternatePhoneCode: f.alternatePhoneCode || f.phoneCode }));
+      if (value !== 'India') setDistricts([]);
+      setAreaSearch(''); setAreaDropdownOpen(false);
+    } else if (name === 'payment') {
+      setForm(f => ({ ...f, [name]: value }));
+    } else if (name === 'pincode') {
+      if (isIndiaCountry(form.country)) {
+        const numeric = String(value || '').replace(/\D/g, '').slice(0, 10);
+        setForm(f => ({ ...f, pincode: numeric }));
+      } else {
+        const normalized = String(value || '').replace(/[^a-zA-Z0-9\s-]/g, '').slice(0, 20);
+        setForm(f => ({ ...f, pincode: normalized }));
+      }
+    } else {
+      setForm(f => ({ ...f, [name]: value }));
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setFormError("");
+
+    if (hasStockIssues) {
+      const firstIssue = stockIssues[0];
+      setFormError(`${firstIssue.name}: ${firstIssue.reason}. Please update cart quantity.`);
+      return;
+    }
+
+    // Validate required fields
+    if (cartArray.length === 0) {
+      setFormError("All items in your cart are currently out of stock. Please remove them to continue.");
+      return;
+    }
+
+    // Clean and validate phone number
+    const cleanedPhone = cleanDigits(form.phone);
+    const cleanedAlternatePhone = cleanDigits(form.alternatePhone);
+    const selectedAddr = (form.addressId && addressList.find(a => a._id === form.addressId)) || null;
+    const fallbackPhone = cleanDigits(selectedAddr?.phone) || cleanDigits(user?.phoneNumber || user?.phone);
+    const resolvedPhone = cleanedPhone || fallbackPhone;
+    const resolvedCountry = form.country || selectedAddr?.country || 'United Arab Emirates';
+    const resolvedPincode = '';
+
+    if (!cleanedPhone && resolvedPhone) {
+      setForm((f) => ({ ...f, phone: resolvedPhone }));
+    }
+
+    if (!form.country && resolvedCountry) {
+      setForm((f) => ({ ...f, country: resolvedCountry }));
+    }
+
+    console.log('Checkout validation - Phone details:', {
+      originalPhone: form.phone,
+      cleanedPhone: resolvedPhone,
+      cleanedLength: resolvedPhone.length,
+      isValid: /^[0-9]{7,15}$/.test(resolvedPhone)
+    });
+
+    if (form.alternatePhone && !/^[0-9]{7,15}$/.test(cleanedAlternatePhone)) {
+      setFormError("Alternate number must be 7-15 digits.");
+      return;
+    }
+    
+    // Validate main phone number
+    if (!resolvedPhone || resolvedPhone.length < 7 || resolvedPhone.length > 15) {
+      console.warn('Phone validation failed:', {
+        hasValue: !!resolvedPhone,
+        length: resolvedPhone.length
+      });
+      setFormError(`Please enter a valid phone number. Got ${resolvedPhone.length} digits, need 7-15.`);
+      return;
+    }
+    
+    // For online payment (Card / Apple Pay / Google Pay), create Stripe checkout session
+    if (isStripePaymentOption(form.payment)) {
+      setPlacingOrder(true);
+      try {
+        const itemsFromStateCard = cartArray.map((item) => {
+          const value = cartItems?.[item._id];
+          const qty = typeof value === 'number' ? value : value?.quantity || item.quantity || 0;
+          const variantOptions = typeof value === 'object' ? value?.variantOptions : undefined;
+          const offerToken = typeof value === 'object' ? value?.offerToken : undefined;
+          return {
+            id: item._id,
+            quantity: qty,
+            ...(variantOptions ? { variantOptions } : {}),
+            ...(offerToken ? { offerToken } : {}),
+          };
+        }).filter(i => i.quantity > 0);
+
+        let payload = {
+          items: itemsFromStateCard,
+          paymentMethod: 'STRIPE',
+          shippingFee: shipping,
+          shippingMethod: shippingMethod,
+        };
+
+        // Add coupon data if applied
+        if (appliedCoupon && couponDiscount > 0) {
+          payload.coupon = {
+            code: appliedCoupon.code,
+            discountAmount: couponDiscount,
+            title: appliedCoupon.title,
+            description: appliedCoupon.description,
+          };
+        }
+
+        if (user) {
+          const addressId = form.addressId || (addressList[0] && addressList[0]._id);
+          if (addressId) {
+            payload.addressId = addressId;
+          }
+        } else {
+          if (!form.name || !form.email || !resolvedPhone || !form.street || (!form.city && !form.district) || !form.state || !resolvedCountry) {
+            setFormError("Please fill all required shipping details.");
+            setPlacingOrder(false);
+            return;
+          }
+          payload.isGuest = true;
+          // For UAE, use district as city if city is empty
+          const guestCity = form.city || form.district || '';
+          payload.guestInfo = {
+            name: form.name,
+            email: form.email,
+            phone: resolvedPhone,
+            phoneCode: form.phoneCode,
+            alternatePhone: cleanedAlternatePhone || '',
+            alternatePhoneCode: form.alternatePhone ? form.alternatePhoneCode || form.phoneCode : '',
+            street: form.street,
+            city: guestCity,
+            state: form.state,
+            country: resolvedCountry,
+            pincode: resolvedPincode || '',
+          };
+        }
+
+        const fetchOptions = {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        };
+
+        if (user && getToken) {
+          const token = await getToken();
+          if (token) {
+            fetchOptions.headers.Authorization = `Bearer ${token}`;
+          }
+        }
+
+        const res = await fetch('/api/orders', fetchOptions);
+        const data = await res.json();
+
+        if (!res.ok) {
+          setFormError(data?.error || data?.message || 'Failed to create order');
+          setPlacingOrder(false);
+          return;
+        }
+
+        if (data?.session?.url) {
+          window.location.href = data.session.url;
+          return;
+        }
+
+        setFormError('Stripe session could not be created.');
+        setPlacingOrder(false);
+      } catch (error) {
+        setFormError(error.message || "Payment failed");
+        setPlacingOrder(false);
+      }
+      return;
+    }
+    
+    // COD and other payment methods - Now supports guest checkout
+    // Validate phone number for COD
+    if (!resolvedPhone || resolvedPhone.length < 7 || resolvedPhone.length > 15) {
+      setFormError(`Please enter a valid phone number. Got ${resolvedPhone.length} digits, need 7-15.`);
+      return;
+    }
+    
+    setPlacingOrder(true);
+    try {
+      let addressId = form.addressId;
+      // If logged in and no address selected, skip address creation for now
+      // Orders can work without addressId
+      
+      // Validate payment method for remaining balance
+      if (!form.payment) {
+        setFormError("Please select a payment method.");
+        setPlacingOrder(false);
+        return;
+      }
+
+      // Validate COD limit
+      if (form.payment === 'cod') {
+        if (hasPersonalizedOfferItem) {
+          setFormError('COD is not available for personalized offer products. Please use online payment.');
+          setPlacingOrder(false);
+          return;
+        }
+
+        const maxCODAmount = shippingSetting?.maxCODAmount || 0;
+        const remainingAmount = totalAfterWallet;
+        
+        if (shippingSetting?.enableCOD === false) {
+          setFormError("Cash on Delivery is not available.");
+          setPlacingOrder(false);
+          return;
+        }
+        
+        if (maxCODAmount > 0 && remainingAmount > maxCODAmount) {
+          setFormError(`COD is not available for orders above AED${maxCODAmount}. Your order amount is AED${remainingAmount.toFixed(2)}. Please use online payment.`);
+          setPlacingOrder(false);
+          return;
+        }
+      }
+
+      // Build order payload
+      let payload;
+      
+      console.log('Checkout - User state:', user ? 'logged in' : 'guest');
+      console.log('Checkout - User object:', user);
+      
+      // Build items directly from cartItems to preserve variantOptions
+      const itemsFromState = cartArray.map((item) => {
+        const value = cartItems?.[item._id];
+        const qty = typeof value === 'number' ? value : value?.quantity || item.quantity || 0;
+        const variantOptions = typeof value === 'object' ? value?.variantOptions : undefined;
+        const offerToken = typeof value === 'object' ? value?.offerToken : undefined;
+        return {
+          id: item._id,
+          quantity: qty,
+          ...(variantOptions ? { variantOptions } : {}),
+          ...(offerToken ? { offerToken } : {})
+        };
+      }).filter(i => i.quantity > 0);
+      
+      const finalPaymentMethod = form.payment === 'cod' ? 'COD' : form.payment.toUpperCase();
+
+      if (user) {
+        console.log('Building logged-in user payload...');
+        payload = {
+          items: itemsFromState,
+          paymentMethod: finalPaymentMethod,
+          shippingFee: shipping,
+          shippingMethod: shippingMethod,
+        };
+        // Add coupon data if applied
+        if (appliedCoupon && couponDiscount > 0) {
+          payload.coupon = {
+            code: appliedCoupon.code,
+            discountAmount: couponDiscount,
+            title: appliedCoupon.title,
+            description: appliedCoupon.description,
+          };
+        }
+        // Only add addressId if it exists
+        if (addressId || (addressList[0] && addressList[0]._id)) {
+          payload.addressId = addressId || addressList[0]._id;
+        } else if (form.street && form.city && form.state && form.country) {
+          // User is logged in but has no saved address - include address in payload
+          payload.addressData = {
+            name: form.name || user.displayName || '',
+            email: form.email || user.email || '',
+            phone: resolvedPhone || '',
+            phoneCode: form.phoneCode,
+            alternatePhone: cleanedAlternatePhone || '',
+            alternatePhoneCode: form.alternatePhone ? form.alternatePhoneCode || form.phoneCode : '',
+            street: form.street,
+            city: form.city,
+            state: form.state,
+            country: resolvedCountry,
+            zip: resolvedPincode || '',
+            district: form.district || ''
+          };
+        }
+      } else {
+        console.log('Building guest checkout payload...');
+        payload = {
+          items: itemsFromState,
+          paymentMethod: finalPaymentMethod,
+          shippingFee: shipping,
+          shippingMethod: shippingMethod,
+          isGuest: true,
+          guestInfo: {
+            name: form.name,
+            email: form.email,
+            phone: resolvedPhone,
+            phoneCode: form.phoneCode,
+            alternatePhone: cleanedAlternatePhone || '',
+            alternatePhoneCode: form.alternatePhone ? form.alternatePhoneCode || form.phoneCode : '',
+            street: form.street,
+            city: form.city,
+            state: form.state,
+            country: resolvedCountry,
+            pincode: resolvedPincode || '',
+          }
+        };
+        // Add coupon for guest if applied
+        if (appliedCoupon && couponDiscount > 0) {
+          payload.coupon = {
+            code: appliedCoupon.code,
+            discountAmount: couponDiscount,
+            title: appliedCoupon.title,
+            description: appliedCoupon.description,
+          };
+        }
+      }
+      
+      console.log('Submitting order:', payload);
+      
+      let fetchOptions = {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      };
+      
+      if (user && getToken) {
+        console.log('Adding Authorization header for logged-in user...');
+        const token = await getToken();
+        console.log('Got token:', token ? 'yes' : 'no');
+        fetchOptions.headers = {
+          ...fetchOptions.headers,
+          Authorization: `Bearer ${token}`,
+        };
+      } else {
+        console.log('No Authorization header - guest checkout');
+      }
+      
+      console.log('Final fetch options:', { ...fetchOptions, body: 'payload' });
+      
+      const res = await fetch("/api/orders", fetchOptions);
+      if (!res.ok) {
+        const errorText = await res.text();
+        let msg = errorText;
+        try {
+          const data = JSON.parse(errorText);
+          msg = data.message || data.error || errorText;
+        } catch {}
+        if (/pincode/i.test(String(msg || ''))) {
+          msg = 'Please enter a valid pincode.';
+        }
+        setFormError(msg);
+        setPlacingOrder(false);
+        const isInputValidationError = /pincode|phone|shipping address|required|missing/i.test(String(msg || '').toLowerCase());
+        if (!isInputValidationError) {
+          router.push(`/order-failed?reason=${encodeURIComponent(msg)}`);
+        }
+        return;
+      }
+      const data = await res.json();
+      if (data._id || data.id) {
+        // Order created successfully - clear cart and show prepaid upsell before redirect
+        const createdOrderId = data._id || data.id;
+        const orderTotal = data.total || totalAfterWallet;
+
+        trackCustomerBehavior({
+          eventType: 'order_placed',
+          storeId: checkoutStoreId,
+          orderId: String(createdOrderId),
+          orderValue: Number(orderTotal || 0),
+          nextAction: 'conversion',
+        }, {
+          user,
+          identity: {
+            customerName: form.name || user?.displayName || '',
+            customerEmail: form.email || user?.email || '',
+            customerPhone: form.phone || user?.phoneNumber || '',
+          }
+        });
+
+        dispatch(clearCart());
+        if (totalAfterWallet <= 0) {
+          router.push(`/order-success?orderId=${createdOrderId}`);
+        } else {
+          setUpsellOrderId(createdOrderId);
+          setUpsellOrderTotal(orderTotal);
+          setShowPrepaidModal(true);
+        }
+      } else {
+        // No order ID returned - treat as failure
+        setFormError("Order creation failed. Please try again.");
+        setPlacingOrder(false);
+        router.push(`/order-failed?reason=${encodeURIComponent('Order creation failed')}`);
+      }
+
+    } catch (err) {
+      const errorMsg = err.message || "Order failed. Please try again.";
+      setFormError(errorMsg);
+      setPlacingOrder(false);
+      router.push(`/order-failed?reason=${encodeURIComponent(errorMsg)}`);
+    } finally {
+      setPlacingOrder(false);
+    }
+  };
+
+  const handlePayNowForExistingOrder = async () => {
+    if (!upsellOrderId) return;
+
+    setPayingNow(true);
+    try {
+      const orderRes = await fetch('/api/stripe/prepaid-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: upsellOrderId,
+        }),
+      });
+
+      const orderData = await orderRes.json();
+      if (!orderRes.ok || !orderData?.url) {
+        throw new Error(orderData?.error || orderData?.message || 'Failed to initiate card payment.');
+      }
+
+      setShowPrepaidModal(false);
+      window.location.href = orderData.url;
+    } catch (error) {
+      setFormError(error?.message || 'Unable to process prepaid payment right now.');
+    } finally {
+      setPayingNow(false);
+    }
+  };
+
+  if (authLoading) return null;
+  
+  if ((!cartItems || Object.keys(cartItems).length === 0) && !showPrepaidModal && !navigatingToSuccess) {
+    return (
+      <div className="py-20 text-center min-h-[50vh] flex flex-col items-center justify-center">
+        <div className="text-6xl mb-4">🛒</div>
+        <div className="text-2xl font-bold text-gray-900 mb-2">Your cart is empty</div>
+        <div className="text-gray-600 mb-6">Add some products to your cart and come back!</div>
+        <button 
+          onClick={() => router.push('/shop')}
+          className="bg-orange-500 hover:bg-orange-600 text-white px-8 py-3 rounded-lg font-semibold transition-colors"
+        >
+          Continue Shopping
+        </button>
+      </div>
+    );
+  }
+
+  const isGuestAddressReady = !!(form.name && form.phone && (form.city || form.district) && form.state && form.street);
+
+  if (showPrepaidModal || navigatingToSuccess) {
+    // If we just placed a COD order, show the prepaid upsell modal even though cart is empty
+    if (showPrepaidModal || navigatingToSuccess) {
+      return (
+        <>
+          <PrepaidUpsellModal 
+            open={showPrepaidModal || navigatingToSuccess}
+            orderTotal={upsellOrderTotal}
+            discountAmount={upsellOrderTotal * 0.05}
+            onClose={() => { 
+              setNavigatingToSuccess(true); 
+              setTimeout(() => {
+                router.push(`/order-success?orderId=${upsellOrderId}`); 
+              }, 100);
+            }}
+            onNoThanks={() => { 
+              setNavigatingToSuccess(true); 
+              setTimeout(() => {
+                router.push(`/order-success?orderId=${upsellOrderId}`); 
+              }, 100);
+            }}
+            onPayNow={handlePayNowForExistingOrder}
+            loading={payingNow}
+          />
+        </>
+      );
+    }
+    return (
+      <div className="py-20 text-center">
+        <div className="text-xl font-bold text-gray-900 mb-2">Your cart is empty</div>
+        <div className="text-gray-600 mb-4">Redirecting to shop...</div>
+        <button 
+          onClick={() => router.push('/shop')}
+          className="mt-4 bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-lg font-semibold"
+        >
+          Continue Shopping Now
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <FbqInitiateCheckout
+        value={totalAfterWallet}
+        currency="AED"
+        contentIds={cartArray.map((item) => String(item?._id || item?._cartKey || '')).filter(Boolean)}
+        numItems={cartArray.reduce((sum, item) => sum + Number(item?.quantity || 0), 0)}
+      />
+      <div className="py-10 bg-[#f5f5f7] md:pb-0 pb-20 min-h-screen">
+      <div className="max-w-[1250px] mx-auto grid grid-cols-1 md:grid-cols-3 gap-6 px-4">
+        {/* Left column: address, form, payment */}
+        <div className="md:col-span-2">
+          <div className="p-2 md:p-0">
+            {/* Shipping Details Section */}
+            <form id="checkout-form" onSubmit={handleSubmit} className="flex flex-col gap-0">
+              {formError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-start gap-3">
+                  <svg className="w-5 h-5 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                  </svg>
+                  <div>
+                    <div className="font-semibold">{isPincodeError ? 'Address Validation' : 'Validation Error'}</div>
+                    <div className="text-sm mt-1">{isPincodeError ? 'Please enter a valid pincode.' : formError}</div>
+                  </div>
+                </div>
+              )}
+              
+              {/* Guest Checkout Notice */}
+              {!user && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h3 className="font-bold text-blue-900 mb-1">Checkout as Guest</h3>
+                      <p className="text-sm text-blue-800">You can place your order without creating an account.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowSignIn(true)}
+                      className="text-blue-600 hover:text-blue-700 text-sm font-semibold underline whitespace-nowrap ml-4"
+                    >
+                      Sign In Instead
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {cartDisplayItems.length > 0 && (
+                <div className="mb-4 border border-gray-200 rounded-lg bg-white">
+                  <div className="px-4 py-3 border-b border-gray-200 text-sm font-semibold text-gray-900">Products in cart</div>
+                  <div className="p-3 space-y-2">
+                    {cartDisplayItems.map((item) => {
+                      const stockIssue = stockIssues.find((issue) => String(issue.id) === String(item.id));
+                      return (
+                        <div key={item.id} className="flex items-center justify-between gap-4 text-sm border border-gray-100 rounded-md p-3">
+                          <div className="flex items-center gap-3.5 min-w-0">
+                            <img src={item.image} alt={item.name} className="w-14 h-14 rounded object-cover border border-gray-200" />
+                            <div className="min-w-0">
+                              <div className="font-semibold text-gray-900 truncate text-base">{item.name}</div>
+                              <div className="flex items-center gap-2 mt-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDecreaseCartQty(item)}
+                                  disabled={item.quantity <= 0}
+                                  className="w-7 h-7 rounded border border-gray-300 text-gray-700 disabled:opacity-40"
+                                >
+                                  -
+                                </button>
+                                <span className="text-sm text-gray-700 min-w-[24px] text-center">{item.quantity}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleIncreaseCartQty(item)}
+                                  disabled={(() => {
+                                    // Bundle products can always increase
+                                    if ((item.bulkVariants || []).length > 0) return false;
+                                    return typeof item.maxQty === "number" && item.maxQty > 0 && item.quantity >= item.maxQty;
+                                  })()}
+                                  
+                                  className="w-7 h-7 rounded border border-gray-300 text-gray-700 disabled:opacity-40"
+                                >
+                                  +
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteCartItem(item)}
+                                  className="text-sm text-red-600 font-medium ml-1"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                          {stockIssue ? (
+                            <span className="text-xs text-red-600 font-medium">{stockIssue.reason}</span>
+                          ) : (
+                            <span className="text-xs text-green-600 font-medium">In stock</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {checkoutAddonLoading && cartDisplayItems.length > 0 && (
+                <div className="mb-4 border border-emerald-200 rounded-lg bg-emerald-50/50 p-3 text-sm text-emerald-800">
+                  Checking special add-on offer for your cart...
+                </div>
+              )}
+
+              {checkoutAddon && (
+                <div className="mb-4 border border-emerald-200 rounded-lg bg-emerald-50/70 p-3">
+                  <div className="text-sm font-semibold text-emerald-900">Special add-on offer</div>
+                  <div className="text-xs text-emerald-700 mt-0.5 mb-3 leading-relaxed break-words">
+                    Add this with {checkoutAddon.baseProductName} and save {checkoutAddon.discountPercent}%
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white border border-emerald-100 rounded-lg p-3">
+                    <div className="flex items-center gap-3 min-w-0 w-full sm:w-auto">
+                      <img
+                        src={checkoutAddon.product?.images?.[0] || '/placeholder.png'}
+                        alt={checkoutAddon.product?.name || 'Addon product'}
+                        className="w-12 h-12 sm:w-14 sm:h-14 rounded object-cover border border-gray-200 flex-shrink-0"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold text-gray-900 truncate text-sm sm:text-base">{checkoutAddon.product?.name || 'Recommended product'}</div>
+                        <div className="text-sm text-gray-600 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="font-semibold text-emerald-700">AED {checkoutAddon.discountedPrice.toLocaleString()}</span>
+                          <span className="text-xs line-through text-gray-400">AED {checkoutAddon.basePrice.toLocaleString()}</span>
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">
+                            {checkoutAddon.discountPercent}% OFF
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleAddCheckoutAddon}
+                      disabled={addingCheckoutAddon}
+                      className="w-full sm:w-auto px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold disabled:opacity-60"
+                    >
+                      {addingCheckoutAddon ? 'Adding...' : 'Add to order'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {hasStockIssues && (
+                <div className="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                  Unable to place order for: {stockIssues.map((issue) => issue.name).join(', ')}. Please reduce quantity or remove unavailable items.
+                </div>
+              )}
+              
+              <h2 className="text-3xl font-bold mb-4 mt-1 text-gray-900">Shipping details</h2>
+              {/* ...existing code for address/guest form... */}
+              {/* Show address fetch error if present */}
+              {addressFetchError && (
+                <div className="text-red-600 font-semibold mb-2">
+                  {addressFetchError === 'Unauthorized' ? (
+                    <>
+                      You are not logged in or your session expired. <button className="underline text-blue-600" type="button" onClick={() => setShowSignIn(true)}>Sign in again</button>.
+                    </>
+                  ) : addressFetchError}
+                </div>
+              )}
+              {addressList.length > 0 && !addressFetchError ? (
+                <div>
+                  {/* Shipping Address Section - Noon.com Style */}
+                  <div className="bg-white rounded-lg border border-gray-200">
+                    <div className="px-4 py-3 border-b border-gray-200">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-semibold text-gray-700">Address</span>
+                        <button 
+                          type="button"
+                          className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                          onClick={() => setShowAddressModal(true)}
+                        >
+                          ⇄ Switch Address
+                        </button>
+                      </div>
+                    </div>
+                    
+                    {form.addressId && (() => {
+                      const selectedAddress = addressList.find(a => a._id === form.addressId);
+                      if (!selectedAddress) return null;
+                      return (
+                        <div 
+                          className="px-4 py-4 cursor-pointer hover:bg-gray-50 transition-colors"
+                          onClick={() => {
+                            console.log('📍 Address card clicked!');
+                            setShowAddressModal(true);
+                          }}
+                        >
+                          <div className="flex items-start gap-3">
+                            {/* Location Pin Icon */}
+                            <div className="flex-shrink-0 mt-0.5">
+                              <svg className="w-6 h-6 text-yellow-500" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+                              </svg>
+                            </div>
+                            
+                            {/* Address Details */}
+                            <div className="flex-1">
+                              <div className="text-sm font-medium text-gray-900 mb-1">
+                                Deliver to <span className="font-bold">{selectedAddress.name?.toUpperCase() || 'HOME'}</span>
+                              </div>
+                              <div className="text-sm text-gray-600 leading-relaxed">
+                                {selectedAddress.street}
+                                {selectedAddress.city && ` - ${selectedAddress.city}`}
+                                {selectedAddress.district && ` - ${selectedAddress.district}`}
+                                {selectedAddress.state && ` - ${selectedAddress.state}`}
+                              </div>
+                            </div>
+                            
+                            {/* Right Arrow */}
+                            <div className="flex-shrink-0">
+                              <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                              </svg>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    
+                    {!form.addressId && (
+                      <div 
+                        className="px-4 py-4 cursor-pointer hover:bg-gray-50 transition-colors"
+                        onClick={() => setShowAddressModal(true)}
+                      >
+                        <div className="flex items-center justify-center gap-2 text-blue-600 font-medium">
+                          <span className="text-xl">+</span>
+                          <span>Select Delivery Address</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                
+                {/* Phone Number Section - Show for logged-in users if missing from address */}
+                {shouldShowPhoneRequired && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mt-3">
+                    <div className="flex items-start gap-2 mb-3">
+                      <svg className="w-5 h-5 text-yellow-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      <div>
+                        <p className="text-sm font-semibold text-yellow-800">Phone Number Required</p>
+                        <p className="text-xs text-yellow-700 mt-1">Your address doesn't have a phone number. Please add one for delivery contact.</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <select
+                        className="border border-yellow-300 bg-white rounded px-2 py-2 focus:border-yellow-400"
+                        name="phoneCode"
+                        value={form.phoneCode}
+                        onChange={handleChange}
+                        style={{ maxWidth: '110px' }}
+                        required
+                      >
+                        {countryCodes.map((c) => (
+                          <option key={c.code} value={c.code}>{c.code}</option>
+                        ))}
+                      </select>
+                      <input
+                        className="border border-yellow-300 bg-white rounded px-4 py-2 flex-1 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-200"
+                        type="tel"
+                        name="phone"
+                        placeholder="Enter phone number | ادخل رقم الهاتف"
+                        value={form.phone || ''}
+                        onChange={(e) => {
+                          // Only allow digits
+                          const cleaned = e.target.value.replace(/\D/g, '');
+                          setForm(f => ({ ...f, phone: cleaned }));
+                        }}
+                        pattern="[0-9]{7,15}"
+                        title="Phone number must be 7-15 digits"
+                        maxLength="15"
+                        required
+                      />
+                    </div>
+                    {form.phone && (form.phone.length < 7 || form.phone.length > 15) && (
+                      <div className="text-red-500 text-xs mt-2">Phone number must be 7-15 digits</div>
+                    )}
+                  </div>
+                )}
+                </div>
+              ) : ((!user) || (addressList.length === 0 && user)) ? (
+                <div className="flex flex-col gap-3.5">{/* Guest form starts here */}
+                  {/* ...existing code for guest/inline address form... */}
+                  {/* Name */}
+                  <input
+                    className="border border-gray-200 bg-white rounded px-4 py-3.5 focus:border-gray-400"
+                    type="text"
+                    name="name"
+                    placeholder="Name | الاسم"
+                    value={form.name || ''}
+                    onChange={handleChange}
+                    required
+                  />
+                  {/* Phone input */}
+                  <div className="flex gap-3">
+                    <select
+                      className="border border-gray-200 bg-white rounded px-2 py-3.5 focus:border-gray-400"
+                      name="phoneCode"
+                      value={form.phoneCode}
+                      onChange={handleChange}
+                      style={{ maxWidth: '110px' }}
+                      required
+                    >
+                      {countryCodes.map((c) => (
+                        <option key={c.code} value={c.code}>{c.code}</option>
+                      ))}
+                    </select>
+                    <input
+                      className="border border-gray-200 bg-white rounded px-4 py-3.5 flex-1 focus:border-gray-400"
+                      type="tel"
+                      name="phone"
+                      placeholder="Phone number | رقم الهاتف"
+                      value={form.phone || ''}
+                      onChange={(e) => {
+                        // Only allow digits
+                        const cleaned = e.target.value.replace(/\D/g, '');
+                        setForm(f => ({ ...f, phone: cleaned }));
+                      }}
+                      pattern="[0-9]{7,15}"
+                      title="Phone number must be 7-15 digits"
+                      maxLength="15"
+                      required
+                    />
+                  </div>
+                  {form.phone && !/^[0-9]{7,15}$/.test(form.phone) && (
+                    <div className="text-red-500 text-sm">Phone number must be 7-15 digits</div>
+                  )}
+                  {/* Alternate phone checkbox */}
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showAlternatePhone}
+                      onChange={(e) => {
+                        setShowAlternatePhone(e.target.checked);
+                        if (!e.target.checked) {
+                          setForm(f => ({ ...f, alternatePhone: '', alternatePhoneCode: f.phoneCode }));
+                        }
+                      }}
+                      className="w-4 h-4 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
+                    />
+                    <span className="text-sm text-gray-700">Add alternate phone number (optional)</span>
+                  </label>
+                  {/* Alternate phone input - only show when checkbox is ticked */}
+                  {showAlternatePhone && (
+                    <>
+                      <div className="flex gap-2">
+                        <select
+                          className="border border-gray-200 bg-white rounded px-2 py-3.5 focus:border-gray-400"
+                          name="alternatePhoneCode"
+                          value={form.alternatePhoneCode}
+                          onChange={handleChange}
+                          style={{ maxWidth: '110px' }}
+                        >
+                          {countryCodes.map((c) => (
+                            <option key={c.code} value={c.code}>{c.code}</option>
+                          ))}
+                        </select>
+                        <input
+                          className="border border-gray-200 bg-white rounded px-4 py-3.5 flex-1 focus:border-gray-400"
+                          type="tel"
+                          name="alternatePhone"
+                          placeholder="Alternate phone (optional) | رقم بديل (اختياري)"
+                          value={form.alternatePhone || ''}
+                          onChange={(e) => {
+                            // Only allow digits
+                            const cleaned = e.target.value.replace(/\D/g, '');
+                            setForm(f => ({ ...f, alternatePhone: cleaned }));
+                          }}
+                          pattern="[0-9]{7,15}"
+                          title="Alternate number must be 7-15 digits"
+                          maxLength="15"
+                        />
+                      </div>
+                      {form.alternatePhone && !/^[0-9]{7,15}$/.test(form.alternatePhone) && (
+                        <div className="text-red-500 text-sm">Alternate number must be 7-15 digits</div>
+                      )}
+                    </>
+                  )}
+                  {/* Email (optional) */}
+                  <input
+                    className="border border-gray-200 bg-white rounded px-4 py-3.5 focus:border-gray-400"
+                    type="email"
+                    name="email"
+                    placeholder="Email address | البريد الالكتروني"
+                    value={form.email || ''}
+                    onChange={handleChange}
+                  />
+                  {/* District dropdown (for India) */}
+                  {form.country === 'India' && (
+                    <select
+                      className="border border-gray-200 bg-white rounded px-4 py-3.5 focus:border-gray-400"
+                      name="district"
+                      value={form.district}
+                      onChange={handleChange}
+                      required={!!form.state}
+                      disabled={!form.state}
+                    >
+                      <option value="">Select District</option>
+                      {districts.map((d) => (
+                        <option key={d} value={d}>{d}</option>
+                      ))}
+                    </select>
+                  )}
+                  {/* Full Address Line (street) */}
+                  <input
+                    className="border border-gray-200 bg-white rounded px-4 py-3.5 focus:border-gray-400"
+                    type="text"
+                    name="street"
+                    placeholder="Full Address Line (Street, Building, Apartment) | العنوان الكامل (الشارع، المبنى، الشقة)"
+                    value={form.street || ''}
+                    onChange={handleChange}
+                    required
+                  />
+                  {/* State/Emirate */}
+                  {form.country === 'India' ? (
+                    <select
+                      className="border border-gray-200 bg-white rounded px-4 py-3.5 focus:border-gray-400"
+                      name="state"
+                      value={form.state}
+                      onChange={handleChange}
+                      required
+                    >
+                      <option value="">Select State</option>
+                      {indiaStatesAndDistricts.map((s) => (
+                        <option key={s.state} value={s.state}>{s.state}</option>
+                      ))}
+                    </select>
+                  ) : form.country === 'United Arab Emirates' ? (
+                    <select
+                      className="border border-gray-200 bg-white rounded px-4 py-3.5 focus:border-gray-400"
+                      name="state"
+                      value={form.state}
+                      onChange={handleChange}
+                      required
+                    >
+                      <option value="">Select Emirate | اختر الإمارة</option>
+                      {uaeEmirates.map((emirate) => (
+                        <option key={emirate.value} value={emirate.value}>{emirate.label}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      className="border border-gray-200 bg-white rounded px-4 py-2 focus:border-gray-400"
+                      type="text"
+                      name="state"
+                      placeholder="Emirate / State | الإمارة / الولاية"
+                      value={form.state || ''}
+                      onChange={handleChange}
+                      required
+                    />
+                  )}
+                  {/* UAE area/district searchable dropdown */}
+                  {form.country === 'United Arab Emirates' && form.state && (() => {
+                    const areas = uaeLocations.find(e => e.emirate === form.state)?.areas || [];
+                    const filtered = areas.filter(a => a.toLowerCase().includes(areaSearch.toLowerCase()));
+                    return areas.length > 0 ? (
+                      <div className="relative" ref={areaDropdownRef}>
+                        <div
+                          className="border border-gray-200 bg-white rounded px-4 py-3.5 cursor-pointer flex items-center justify-between"
+                          onClick={() => setAreaDropdownOpen(o => !o)}
+                        >
+                          <span className={form.district ? 'text-gray-900' : 'text-gray-400'}>
+                            {form.district || 'Select Area | اختر المنطقة'}
+                          </span>
+                          <svg className={`w-4 h-4 text-gray-400 transition-transform ${areaDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                        </div>
+                        {areaDropdownOpen && (
+                          <div className="absolute z-30 w-full mt-1 bg-white border border-gray-200 rounded shadow-lg">
+                            <div className="p-2 border-b border-gray-100">
+                              <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded">
+                                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" /></svg>
+                                <input
+                                  autoFocus
+                                  type="text"
+                                  className="bg-transparent outline-none text-sm w-full"
+                                  placeholder="Type to search for your area/district | اكتب للبحث عن المنطقة"
+                                  value={areaSearch}
+                                  onChange={e => setAreaSearch(e.target.value)}
+                                />
+                              </div>
+                            </div>
+                            <ul className="max-h-52 overflow-y-auto">
+                              {filtered.length > 0 ? filtered.map(area => (
+                                <li
+                                  key={area}
+                                  className={`px-4 py-2.5 text-sm cursor-pointer hover:bg-blue-50 ${form.district === area ? 'bg-blue-600 text-white hover:bg-blue-600' : 'text-gray-800'}`}
+                                  onClick={() => {
+                                    setForm(f => ({ ...f, district: area, city: area }));
+                                    setAreaSearch('');
+                                    setAreaDropdownOpen(false);
+                                  }}
+                                >{area}</li>
+                              )) : (
+                                <li className="px-4 py-3 text-sm text-gray-400">No areas found</li>
+                              )}
+                            </ul>
+                          </div>
+                        )}
+                        {/* hidden input for form validation */}
+                        <input type="text" name="district" value={form.district || ''} onChange={() => {}} required className="sr-only" />
+                      </div>
+                    ) : null;
+                  })()}
+                  {/* Country dropdown (default India) */}
+                  <select
+                    className="border border-gray-200 bg-white rounded px-4 py-3.5 focus:border-gray-400"
+                    name="country"
+                    value={form.country}
+                    onChange={handleChange}
+                    required
+                  >
+                    <option value="India">India</option>
+                    {countryCodes.filter(c => c.label !== 'India').map((c) => (
+                      <option key={c.label} value={c.label.replace(/ \(.*\)/, '')}>{c.label.replace(/ \(.*\)/, '')}</option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+              <h2 className="text-3xl font-bold mb-4 mt-6 text-gray-900">Payment methods</h2>
+
+              <div className="flex flex-col gap-2 mb-4">
+                {/* Credit Card Option */}
+                <label className={`flex items-center gap-3 p-4 border-2 rounded-lg transition-all ${!actuallyOnlineDisabledForOrder ? 'cursor-pointer border-gray-200 hover:border-blue-400 hover:bg-blue-50/30 has-[:checked]:border-blue-500 has-[:checked]:bg-blue-50' : 'opacity-60 cursor-not-allowed border-gray-200 bg-gray-50'}`}>
+                  <input
+                    type="radio"
+                    name="payment"
+                    value="card"
+                    checked={form.payment === 'card'}
+                    onChange={handleChange}
+                    disabled={actuallyOnlineDisabledForOrder}
+                    className="accent-blue-600 w-5 h-5"
+                  />
+                  <div className="flex-1 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <svg className="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"/>
+                        <path fillRule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clipRule="evenodd"/>
+                      </svg>
+                      <div>
+                        <span className="font-semibold text-gray-900">Credit / Debit Card</span>
+                        <div className="text-xs text-gray-600">Secure Stripe checkout • Visa, Mastercard, Amex</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Image src={Creditimage4} alt="Visa" width={24} height={16} className="object-contain"/>
+                      <Image src={Creditimage3} alt="Mastercard" width={24} height={16} className="object-contain"/>
+                      <Image src={Creditimage2} alt="Card" width={24} height={16} className="object-contain"/>
+                      <Image src={Creditimage1} alt="Card" width={24} height={16} className="object-contain"/>
+                    </div>
+                  </div>
+                </label>
+
+                {/* Apple Pay Option */}
+                <label className={`flex items-center gap-3 p-4 border-2 rounded-lg transition-all ${(walletSupport.applePay && !actuallyOnlineDisabledForOrder) ? 'cursor-pointer border-gray-200 hover:border-blue-400 hover:bg-blue-50/30 has-[:checked]:border-blue-500 has-[:checked]:bg-blue-50' : 'opacity-60 cursor-not-allowed border-gray-200 bg-gray-50'}`}>
+                  <input
+                    type="radio"
+                    name="payment"
+                    value="applepay"
+                    checked={form.payment === 'applepay'}
+                    onChange={handleChange}
+                    disabled={!walletSupport.applePay || actuallyOnlineDisabledForOrder}
+                    className="accent-blue-600 w-5 h-5"
+                  />
+                  <div className="flex-1 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div>
+                        <span className="font-semibold text-gray-900">Apple Pay</span>
+                        <div className="text-xs text-gray-600">{walletSupport.applePay ? 'Will open in Stripe secure checkout' : 'Available on Safari (iPhone/iPad/Mac)'}</div>
+                      </div>
+                    </div>
+                    <Image src={ApplePayIcon} alt="Apple Pay" width={52} height={20} className="object-contain" />
+                  </div>
+                </label>
+
+                {/* Google Pay Option */}
+                <label className={`flex items-center gap-3 p-4 border-2 rounded-lg transition-all ${(walletSupport.googlePay && !actuallyOnlineDisabledForOrder) ? 'cursor-pointer border-gray-200 hover:border-blue-400 hover:bg-blue-50/30 has-[:checked]:border-blue-500 has-[:checked]:bg-blue-50' : 'opacity-60 cursor-not-allowed border-gray-200 bg-gray-50'}`}>
+                  <input
+                    type="radio"
+                    name="payment"
+                    value="googlepay"
+                    checked={form.payment === 'googlepay'}
+                    onChange={handleChange}
+                    disabled={!walletSupport.googlePay || actuallyOnlineDisabledForOrder}
+                    className="accent-blue-600 w-5 h-5"
+                  />
+                  <div className="flex-1 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div>
+                        <span className="font-semibold text-gray-900">Google Pay</span>
+                        <div className="text-xs text-gray-600">{walletSupport.googlePay ? 'Will open in Stripe secure checkout' : 'Available on Chrome/Android'}</div>
+                      </div>
+                    </div>
+                    <Image src={GooglePayIcon} alt="Google Pay" width={52} height={20} className="object-contain" />
+                  </div>
+                </label>
+
+                {/* Cash on Delivery Option */}
+                {!hasPersonalizedOfferItem && (() => {
+                  const maxCODAmount = shippingSetting?.maxCODAmount || 0;
+                  const remainingAmount = total;
+                  const isCODDisabled = isCODDisabledForOrder || shippingSetting?.enableCOD === false || 
+                    (maxCODAmount > 0 && remainingAmount > maxCODAmount);
+                  
+                  return (
+                    <label className={`flex items-center gap-3 p-4 border-2 rounded-lg transition-all ${
+                      isCODDisabled 
+                        ? 'opacity-50 cursor-not-allowed border-gray-300 bg-gray-50' 
+                        : 'cursor-pointer border-gray-200 hover:border-green-400 hover:bg-green-50/30 has-[:checked]:border-green-500 has-[:checked]:bg-green-50'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="payment"
+                        value="cod"
+                        checked={form.payment === 'cod' && !isCODDisabled}
+                        onChange={handleChange}
+                        disabled={isCODDisabled}
+                        className="accent-green-600 w-5 h-5"
+                      />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M4 4a2 2 0 00-2 2v4a2 2 0 002 2V6h10a2 2 0 00-2-2H4zm2 6a2 2 0 012-2h8a2 2 0 012 2v4a2 2 0 01-2 2H8a2 2 0 01-2-2v-4zm6 4a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd"/>
+                          </svg>
+                          <div>
+                            <span className="font-semibold text-gray-900">Cash on Delivery</span>
+                            <div className="text-xs text-gray-600">Pay when you receive</div>
+                          </div>
+                        </div>
+                        {isCODDisabled && hasProductWithCODDisabled && (
+                          <span className="text-xs text-red-600 ml-8">Not available for some products in cart</span>
+                        )}
+                      {isCODDisabled && !hasProductWithCODDisabled && maxCODAmount > 0 && remainingAmount > maxCODAmount && (
+                          <span className="text-xs text-red-600 ml-8">Max limit AED{maxCODAmount}</span>
+                        )}
+                      </div>
+                    </label>
+                  );
+                })()}
+              </div>
+
+              {bothDisabledForOrder && problematicProducts.length > 0 && (
+                <div className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                  <strong>⚠️ Product Configuration Error:</strong> 
+                  {problematicProducts.map(p => p.name).join(', ')} have both COD and online payments disabled. 
+                  Online payment has been temporarily enabled as a fallback. Please contact seller to fix product settings.
+                </div>
+              )}
+
+              {hasPersonalizedOfferItem && (
+                <div className="mb-4 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  COD is not available for personalized offer products. Please use online payment.
+                </div>
+              )}
+              
+              {!user && !hasPersonalizedOfferItem && (
+                <div className="mt-4 text-sm text-gray-600 bg-green-50 border border-green-200 rounded-lg p-3">
+                  <span className="font-semibold text-green-900">✓ Guest Checkout Available:</span> You can place COD orders without creating an account. Your order will be processed instantly!
+                </div>
+              )}
+
+              {!form.addressId && !isGuestAddressReady && (
+                <div className="mt-4 bg-yellow-50 border border-yellow-200 text-yellow-800 text-sm p-3 rounded-lg">
+                  ⚠️ Please fill in your delivery address to place the order.
+                </div>
+              )}
+              <button
+                type="submit"
+                form="checkout-form"
+                className={`hidden md:block mt-4 w-full text-white font-bold py-3 rounded text-lg transition ${
+                  (!form.addressId && !isGuestAddressReady) || isPlaceOrderDisabled
+                    ? 'bg-gray-300 cursor-not-allowed opacity-60'
+                    : 'bg-red-600 hover:bg-red-700'
+                }`}
+                disabled={(!form.addressId && !isGuestAddressReady) || isPlaceOrderDisabled}
+                aria-busy={placingOrder}
+              >
+                {placingOrder ? 'Placing order...' : 'Place order'}
+              </button>
+            </form>
+          </div>
+        </div>
+        {/* Right column: order details */}
+        <div className="h-fit p-2 md:p-0 md:pt-2">
+          <h2 className="text-3xl font-bold mb-4 text-gray-900">Order details</h2>
+          <div className="space-y-3">
+            <div className="flex justify-between text-lg text-gray-900">
+              <span>Items</span>
+              <span className="font-semibold">AED {subtotal.toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between text-lg text-gray-900">
+              <span>Shipping & handling</span>
+              <span className="font-semibold">{shipping > 0 ? `AED ${shipping.toLocaleString()}` : 'AED 0'}</span>
+            </div>
+            <div className="border-t border-gray-300 pt-3 flex justify-between text-xl font-bold text-gray-900">
+              <span>Total</span>
+              <span>AED {totalAfterWallet.toLocaleString()}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Sticky Footer - Only Total and Place Order on Mobile */}
+      <div className="fixed bottom-0 left-0 right-0 md:hidden bg-white border-t border-gray-200 shadow-lg z-40 p-4">
+        <div className="max-w-6xl mx-auto">
+          {/* Address validation message */}
+          {!form.addressId && !isGuestAddressReady && (
+            <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 text-sm p-3 rounded mb-3">
+              Please fill the address to continue
+            </div>
+          )}
+          
+          <button
+            type="submit"
+            form="checkout-form"
+            className={`relative w-full text-white font-bold py-4 rounded-lg text-base transition shadow-md hover:shadow-lg flex items-center justify-between px-6 ${
+              (!form.addressId && !isGuestAddressReady) || isPlaceOrderDisabled 
+                ? 'bg-gray-400 cursor-not-allowed opacity-75' 
+                : form.payment === 'cod' 
+                  ? 'bg-red-600 hover:bg-red-700' 
+                  : isStripePaymentOption(form.payment)
+                    ? 'bg-blue-600 hover:bg-blue-700'
+                    : form.payment === 'wallet'
+                      ? 'bg-red-600 hover:bg-red-700'
+                    : 'bg-red-600 hover:bg-red-700'
+            } ${placingOrder ? 'animate-bounce' : ''}`}
+            disabled={(!form.addressId && !isGuestAddressReady) || isPlaceOrderDisabled}
+            aria-busy={placingOrder}
+          >
+            <span className="text-lg font-bold">AED {totalAfterWallet.toLocaleString()}</span>
+            {placingOrder ? (
+              <span className="inline-flex items-center gap-2">
+                <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                </svg>
+                Placing...
+              </span>
+            ) : (
+              <span className="text-base uppercase tracking-wide">Place Order</span>
+            )}
+            {placingOrder && (
+              <span className="absolute left-0 top-0 h-full w-full overflow-hidden rounded opacity-20">
+                <span className="block h-full w-1/3 bg-white animate-[shimmer_1.2s_ease_infinite]" />
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+      </div>
+
+      <AddressModal 
+        open={showAddressModal} 
+        setShowAddressModal={(show) => {
+          setShowAddressModal(show);
+          if (!show) setEditingAddressId(null);
+        }} 
+        onAddressAdded={(addr) => {
+          setForm((f) => ({
+            ...f,
+            addressId: addr._id,
+            name: addr.name || f.name,
+            email: addr.email || f.email,
+            phone: cleanDigits(addr.phone) || cleanDigits(user?.phoneNumber || user?.phone) || f.phone,
+            phoneCode: addr.phoneCode || '+971',
+            alternatePhone: cleanDigits(addr.alternatePhone),
+            alternatePhoneCode: addr.alternatePhoneCode || '+971',
+            street: addr.street || f.street,
+            city: addr.city || f.city,
+            state: addr.state || f.state,
+            district: addr.district || f.district,
+            country: addr.country || f.country,
+            pincode: pickValidPincode(addr.zip, addr.pincode, f.pincode),
+          }));
+          dispatch(fetchAddress({ getToken }));
+          setEditingAddressId(null);
+        }}
+        initialAddress={editingAddressId ? addressList.find(a => a._id === editingAddressId) : null}
+        isEdit={!!editingAddressId}
+        onAddressUpdated={() => {
+          dispatch(fetchAddress({ getToken }));
+          setEditingAddressId(null);
+        }}
+        addressList={addressList}
+        selectedAddressId={form.addressId}
+        onSelectAddress={(addressId) => {
+          // Find the selected address and populate form with its data
+          const selectedAddr = addressList.find(a => a._id === addressId);
+          if (selectedAddr) {
+            setForm(f => {
+              // Try to get phone from: address -> user profile -> keep existing
+              const addressPhone = cleanDigits(selectedAddr.phone);
+              const userPhone = cleanDigits(user?.phoneNumber || user?.phone);
+              const finalPhone = addressPhone || userPhone || f.phone || '';
+              const finalPincode = pickValidPincode(selectedAddr.zip, selectedAddr.pincode, f.pincode);
+              
+              console.log('Selecting address - Phone sources:', {
+                addressPhone,
+                userPhone,
+                finalPhone,
+                currentFormPhone: f.phone,
+                addressHasPhone: !!selectedAddr.phone
+              });
+              
+              return { 
+                ...f, 
+                addressId,
+                name: selectedAddr.name || f.name,
+                email: selectedAddr.email || f.email,
+                phone: finalPhone,
+                phoneCode: selectedAddr.phoneCode || '+971',
+                alternatePhone: cleanDigits(selectedAddr.alternatePhone),
+                alternatePhoneCode: selectedAddr.alternatePhoneCode || '+971',
+                street: selectedAddr.street || f.street,
+                city: selectedAddr.city || f.city,
+                state: selectedAddr.state || f.state,
+                district: selectedAddr.district || f.district,
+                country: selectedAddr.country || f.country,
+                pincode: finalPincode,
+              };
+            });
+          } else {
+            setForm(f => ({ ...f, addressId }));
+          }
+        }}
+      />
+      <SignInModal open={showSignIn} onClose={() => setShowSignIn(false)} />
+      <PincodeModal 
+        open={showPincodeModal} 
+        onClose={() => setShowPincodeModal(false)} 
+        onPincodeSubmit={handlePincodeSubmit}
+      />
+
+      <PrepaidUpsellModal 
+        open={showPrepaidModal}
+        onClose={() => {
+          setShowPrepaidModal(false);
+          setTimeout(() => router.push(`/order-success?orderId=${upsellOrderId}`), 0);
+        }}
+        onNoThanks={() => {
+          setShowPrepaidModal(false);
+          setTimeout(() => router.push(`/order-success?orderId=${upsellOrderId}`), 0);
+        }}
+        onPayNow={handlePayNowForExistingOrder}
+        loading={payingNow}
+      />
+
+      {/* Coupon Modal */}
+      {showCouponModal && (
+        <div className="fixed inset-0 bg-white/10 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4" onClick={() => setShowCouponModal(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-md sm:max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            {/* Modal Header */}
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between rounded-t-2xl">
+              <h3 className="text-xl font-bold text-gray-900">Apply Coupon</h3>
+              <button onClick={() => setShowCouponModal(false)} className="text-gray-400 hover:text-gray-600 transition">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Coupon Input */}
+            <div className="p-4 sm:p-6 border-b border-gray-200">
+              <form onSubmit={handleApplyCoupon} className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="text"
+                  className="border border-gray-300 rounded-lg px-4 py-3 flex-1 text-sm focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                  placeholder="Enter coupon code"
+                  value={coupon}
+                  onChange={e => setCoupon(e.target.value)}
+                />
+                <button
+                  type="submit"
+                  disabled={!isStripePaymentOption(form.payment)}
+                  className={`font-semibold px-6 py-3 rounded-lg transition whitespace-nowrap w-full sm:w-auto ${
+                    !isStripePaymentOption(form.payment)
+                      ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  }`}
+                >
+                  Apply
+                </button>
+              </form>
+              {!isStripePaymentOption(form.payment) && (
+                <div className="text-xs text-amber-600 mt-2">
+                  Coupons are available only for online payments (Card/Apple Pay/Google Pay).
+                </div>
+              )}
+              {couponError && <div className="text-red-500 text-xs mt-2">{couponError}</div>}
+            </div>
+
+            {/* Available Coupons */}
+            <div className="p-4 sm:p-6">
+              <h4 className="font-semibold text-gray-900 mb-4">Available Coupons</h4>
+              
+              {availableCoupons.length === 0 ? (
+                <p className="text-gray-500 text-sm text-center py-4">No coupons available at the moment</p>
+              ) : (
+                availableCoupons.map((cpn) => {
+                  // Determine eligibility
+                  // Convert cartItems object to array
+                  const cartItemsArray = Object.entries(cartItems || {}).map(([id, value]) => ({
+                    productId: id,
+                    quantity: typeof value === 'number' ? value : value?.quantity || 0,
+                    variantId: typeof value === 'object' ? value?.variantId : undefined
+                  }));
+                  
+                  const itemsTotal = cartItemsArray.reduce((sum, item) => {
+                    const product = products.find((p) => String(p._id) === String(item.productId));
+                    if (!product) return sum;
+                    const entry = cartItems?.[item.productId];
+                    const variantOptions = typeof entry === 'object' ? entry?.variantOptions : undefined;
+                    const resolvedPrice = resolveCartUnitPrice(product, entry);
+                    return sum + computeLineTotal(resolvedPrice, item.quantity, variantOptions?.bundleQty);
+                  }, 0);
+                  
+                  const cartProductIds = cartItemsArray.map(item => item.productId);
+                  
+                  const canUseCoupons = isStripePaymentOption(form.payment);
+                  let isEligible = true;
+                  let ineligibleReason = '';
+
+                  if (!canUseCoupons) {
+                    isEligible = false;
+                    ineligibleReason = 'Only for card payments';
+                  }
+                  
+                  // Check if expired
+                  if (cpn.isExpired) {
+                    isEligible = false;
+                    ineligibleReason = 'Coupon expired';
+                  }
+                  // Check if exhausted
+                  else if (cpn.isExhausted) {
+                    isEligible = false;
+                    ineligibleReason = 'Usage limit reached';
+                  }
+                  // Check minimum order value
+                  else if (itemsTotal < cpn.minOrderValue) {
+                    isEligible = false;
+                    ineligibleReason = `Min order AED${cpn.minOrderValue} required`;
+                  }
+                  // Check if product-specific
+                  else if (cpn.specificProducts?.length > 0) {
+                    const hasEligibleProduct = cpn.specificProducts.some(pid => cartProductIds.includes(pid));
+                    if (!hasEligibleProduct) {
+                      isEligible = false;
+                      ineligibleReason = 'Not applicable for your products';
+                    }
+                  }
+                  
+                  const badgeColors = {
+                    green: 'bg-green-100 text-green-700',
+                    orange: 'bg-orange-100 text-orange-700',
+                    purple: 'bg-purple-100 text-purple-700',
+                    blue: 'bg-blue-100 text-blue-700',
+                  };
+                  const badgeClass = badgeColors[cpn.badgeColor] || badgeColors.green;
+                  
+                  return (
+                    <div
+                      key={cpn._id}
+                      className={`border border-dashed rounded-lg p-4 mb-3 transition ${
+                        isEligible 
+                          ? 'border-green-200 bg-green-50 hover:border-green-300 hover:bg-green-100' 
+                          : 'border-gray-200 bg-gray-50 cursor-not-allowed opacity-75'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <div className={`${badgeClass} font-bold text-xs px-2 py-1 rounded`}>
+                            {cpn.code}
+                          </div>
+                          <div className="flex-1">
+                            <span className="text-sm font-semibold text-gray-900 block">{cpn.title}</span>
+                            {!isEligible && <span className="text-xs text-red-600 font-medium">{ineligibleReason}</span>}
+                          </div>
+                        </div>
+                        {isEligible ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCoupon(cpn.code);
+                              setCouponError('');
+                            }}
+                            className="ml-2 whitespace-nowrap px-3 py-1.5 rounded-md bg-green-600 hover:bg-green-700 text-white text-xs font-semibold"
+                          >
+                            Use Code
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled
+                            className="ml-2 whitespace-nowrap px-3 py-1.5 rounded-md bg-gray-200 text-gray-500 text-xs font-semibold cursor-not-allowed"
+                          >
+                            Not Eligible
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-600">{cpn.description}</p>
+                      {isEligible && (
+                        <p className="text-[11px] text-gray-500 mt-2">Select code, then click Apply above.</p>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      
+    </>
+  );
+}
