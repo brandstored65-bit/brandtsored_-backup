@@ -45,13 +45,13 @@ const productSchemaDefinition = {
 
 const ProductSchema = new mongoose.Schema(productSchemaDefinition, { timestamps: true });
 
-// Add indexes for better query performance
-ProductSchema.index({ inStock: 1, createdAt: -1 });
-ProductSchema.index({ storeId: 1, inStock: 1 });
-ProductSchema.index({ category: 1, inStock: 1 }); // For category filtering
-ProductSchema.index({ price: 1, AED: 1 }); // For discount calculations and price sorting
-ProductSchema.index({ tags: 1, inStock: 1 }); // For tag-based filtering
-ProductSchema.index({ fastDelivery: 1, inStock: 1 }); // For fast delivery filter
+// Add indexes for better query performance (suppress duplicate index warnings)
+ProductSchema.index({ inStock: 1, createdAt: -1 }, { sparse: true });
+ProductSchema.index({ storeId: 1, inStock: 1 }, { sparse: true });
+ProductSchema.index({ category: 1, inStock: 1 }, { sparse: true }); // For category filtering
+ProductSchema.index({ price: 1, AED: 1 }, { sparse: true }); // For discount calculations and price sorting
+ProductSchema.index({ tags: 1, inStock: 1 }, { sparse: true }); // For tag-based filtering
+ProductSchema.index({ fastDelivery: 1, inStock: 1 }, { sparse: true }); // For fast delivery filter
 
 const existingProductModel = mongoose.models.Product;
 

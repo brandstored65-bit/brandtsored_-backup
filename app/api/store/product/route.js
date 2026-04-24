@@ -351,8 +351,12 @@ export async function GET(request) {
             }
         );
     } catch (error) {
-        console.error(error);
-        return NextResponse.json({ error: error.code || error.message }, { status: 400 });
+        console.error('[store/product GET] Error:', error.message, error.stack);
+        return NextResponse.json({ 
+            error: error.message || 'Internal server error',
+            code: error.code,
+            detail: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        }, { status: 500 });
     }
 }
 
