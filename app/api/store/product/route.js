@@ -303,55 +303,90 @@ export async function POST(request) {
 
 export async function GET(request) {
     try {
-        await connectDB();
+        console.log('[store/product GET] Starting request...');
+        
+        try {
+            await connectDB();
+            console.log('[store/product GET] ✓ DB connected');
+        } catch (dbErr) {
+            console.error('[store/product GET] ✗ DB connection failed:', dbErr.message);
+            throw new Error(`Database connection failed: ${dbErr.message}`);
+        }
 
         const authHeader = request.headers.get('authorization');
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            console.warn('[store/product GET] Missing or invalid auth header');
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
         let userId = null;
         const idToken = authHeader.split('Bearer ')[1];
         try {
+            console.log('[store/product GET] Verifying Firebase token...');
             const adminAuth = auth;
             const decodedToken = await adminAuth.verifyIdToken(idToken);
             userId = decodedToken.uid;
+            console.log('[store/product GET] ✓ Token verified, userId:', userId);
         } catch (e) {
+            console.error('[store/product GET] ✗ Token verification failed:', e.message);
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const storeId = await authSeller(userId);
-        if (!storeId) {
-            return NextResponse.json({ error: "Not authorized" }, { status: 401 });
-        }
-
-        const migration = await migrateProductsToActiveStore({ userId, activeStoreId: storeId });
-        if (migration.migratedCount > 0) {
-            console.info('[store/product GET] migrated legacy products to active store', {
-                migratedCount: migration.migratedCount,
-                activeStoreId: storeId,
-            });
-        }
-
-        const products = await Product.find({ storeId }).sort({ createdAt: -1 }).lean();
-
-        // Diagnostic: log count of products missing payment flags
-        const missingCod = products.filter(p => typeof p.codEnabled !== 'boolean').length;
-        const missingOnline = products.filter(p => typeof p.onlinePaymentEnabled !== 'boolean').length;
-        console.log(`[store/product GET] store:${storeId} products:${products.length} missingCod:${missingCod} missingOnline:${missingOnline}`);
-
-        return NextResponse.json(
-            { products },
-            {
-                headers: {
-                    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-                    Pragma: 'no-cache',
-                    Expires: '0',
-                },
+        try {
+            console.log('[store/product GET] Checking seller authorization...');
+            const storeId = await authSeller(userId);
+            if (!storeId) {
+                console.warn('[store/product GET] User not authorized as seller');
+                return NextResponse.json({ error: "Not authorized" }, { status: 401 });
             }
-        );
+            console.log('[store/product GET] ✓ Authorized, storeId:', storeId);
+
+            try {
+                console.log('[store/product GET] Running product migration...');
+                const migration = await migrateProductsToActiveStore({ userId, activeStoreId: storeId });
+                if (migration.migratedCount > 0) {
+                    console.info('[store/product GET] migrated legacy products to active store', {
+                        migratedCount: migration.migratedCount,
+                        activeStoreId: storeId,
+                    });
+                }
+                console.log('[store/product GET] ✓ Migration complete');
+            } catch (migErr) {
+                console.error('[store/product GET] ✗ Migration failed:', migErr.message);
+                throw new Error(`Product migration failed: ${migErr.message}`);
+            }
+
+            try {
+                console.log('[store/product GET] Fetching products for storeId:', storeId);
+                const products = await Product.find({ storeId }).sort({ createdAt: -1 }).lean();
+                console.log('[store/product GET] ✓ Fetched', products.length, 'products');
+
+                // Diagnostic: log count of products missing payment flags
+                const missingCod = products.filter(p => typeof p.codEnabled !== 'boolean').length;
+                const missingOnline = products.filter(p => typeof p.onlinePaymentEnabled !== 'boolean').length;
+                console.log(`[store/product GET] store:${storeId} products:${products.length} missingCod:${missingCod} missingOnline:${missingOnline}`);
+
+                return NextResponse.json(
+                    { products },
+                    {
+                        headers: {
+                            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+                            Pragma: 'no-cache',
+                            Expires: '0',
+                        },
+                    }
+                );
+            } catch (queryErr) {
+                console.error('[store/product GET] ✗ Product query failed:', queryErr.message, queryErr.stack);
+                throw new Error(`Product query failed: ${queryErr.message}`);
+            }
+        } catch (authErr) {
+            console.error('[store/product GET] ✗ Authorization check failed:', authErr.message);
+            throw authErr;
+        }
     } catch (error) {
-        console.error('[store/product GET] Error:', error.message, error.stack);
+        console.error('[store/product GET] ✗ Final error:', error.message);
+        console.error('[store/product GET] Stack:', error.stack);
         return NextResponse.json({ 
             error: error.message || 'Internal server error',
             code: error.code,
