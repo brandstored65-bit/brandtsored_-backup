@@ -5,6 +5,7 @@ import Product from '@/models/Product';
 import authSeller from '@/middlewares/authSeller';
 import mongoose from 'mongoose';
 import { NextResponse } from 'next/server';
+import { auth } from '@/lib/firebase-admin';
 
 // Toggle dummy countdown timer on product page for a product
 export async function POST(request) {
@@ -14,8 +15,6 @@ export async function POST(request) {
 
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const idToken = authHeader.split('Bearer ')[1];
-
-      if (getApps().length === 0) initializeApp({ credential: applicationDefault() });
 
       try {
         const decoded = await auth.verifyIdToken(idToken);

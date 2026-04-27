@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic'
 import dbConnect from '@/lib/mongodb'
 import Product from '@/models/Product'
 import authSeller from '@/middlewares/authSeller'
+import { auth } from '@/lib/firebase-admin'
 import { NextResponse } from 'next/server'
 
 export async function POST(request) {
@@ -14,7 +15,6 @@ export async function POST(request) {
       const idToken = authHeader.split('Bearer ')[1]
       try {
 
-        if (getApps().length === 0) initializeApp({ credential: applicationDefault() })
         const decoded = await auth.verifyIdToken(idToken)
         userId = decoded.uid
       } catch (e) {

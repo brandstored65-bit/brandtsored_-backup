@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic'
 import dbConnect from "@/lib/mongodb";
 import Product from "@/models/Product";
 import authSeller from "@/middlewares/authSeller";
-
+import { auth } from '@/lib/firebase-admin';
 import { NextResponse } from "next/server";
 
 // Toggle online payment availability for a product
@@ -14,7 +14,6 @@ export async function POST(request) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const idToken = authHeader.split('Bearer ')[1];
 
-      if (getApps().length === 0) initializeApp({ credential: applicationDefault() });
       try {
         const decoded = await auth.verifyIdToken(idToken);
         userId = decoded.uid;
