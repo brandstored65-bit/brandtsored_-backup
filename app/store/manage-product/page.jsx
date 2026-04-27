@@ -18,7 +18,7 @@ import ProductForm from "../add-product/page"
 export default function StoreManageProducts() {
     const dispatch = useDispatch();
 
-    const { user, getToken } = useAuth();
+    const { user, getToken, loading: authLoading } = useAuth();
 
     const currency = process.env.NEXT_PUBLIC_CURRENCY_SYMBOL || 'AED'
     const formatAmount = (value) => {
@@ -65,9 +65,17 @@ export default function StoreManageProducts() {
 
     const fetchStoreProducts = async () => {
         try {
-             const { data } = await axios.get('/api/store/product?noauth=true')
-             setProducts(data.products.sort((a, b)=> new Date(b.createdAt) - new Date(a.createdAt)))
+            const token = await getToken();
+            const { data } = await axios.get('/api/store/product', {
+                headers: token ? { Authorization: `Bearer ${token}` } : {}
+            });
+            setProducts(data.products.sort((a, b)=> new Date(b.createdAt) - new Date(a.createdAt)))
         } catch (error) {
+            if (error?.response?.status === 401) {
+                toast.error('You need to create a store first. Please set up your store in the dashboard.');
+                router.push('/store');
+                return;
+            }
             toast.error(error?.response?.data?.error || error.message)
         }
         setLoading(false)
@@ -76,7 +84,10 @@ export default function StoreManageProducts() {
     // Fetch all categories to map IDs to names
     const fetchCategories = async () => {
         try {
-            const { data } = await axios.get('/api/store/categories')
+            const token = await getToken();
+            const { data } = await axios.get('/api/store/categories', {
+                headers: token ? { Authorization: `Bearer ${token}` } : {}
+            });
             const map = {}
             data.categories?.forEach(cat => {
                 map[cat._id] = cat.name
@@ -434,11 +445,15 @@ export default function StoreManageProducts() {
     }
 
     useEffect(() => {
-        if(user){
-            fetchStoreProducts()
-            fetchCategories()
-        }  
-    }, [user])
+        if (authLoading) return;
+        if (!user) {
+            setLoading(false);
+            return;
+        }
+
+        fetchStoreProducts();
+        fetchCategories();
+    }, [authLoading, user])
 
     useEffect(() => {
         if (typeof window === 'undefined') return
@@ -454,6 +469,7 @@ export default function StoreManageProducts() {
     }, [defaultDummyTimerMinutes])
 
     if (loading) return <Loading />
+    if (!user) return <div className="p-6 text-slate-500">Please sign in to manage products.</div>
 
     // Filter products based on search query and selected category
     const filteredProducts = products.filter(product => {

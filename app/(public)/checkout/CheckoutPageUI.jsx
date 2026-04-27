@@ -239,6 +239,21 @@ export default function CheckoutPage() {
 
   const router = useRouter();
 
+  const parseCartKey = (key) => {
+    const parts = String(key || '').split('|');
+    if (parts.length === 1) {
+      return { productId: parts[0], variantOptions: null };
+    }
+    return {
+      productId: parts[0],
+      variantOptions: {
+        color: parts[1] || null,
+        size: parts[2] || null,
+        bundleQty: parts[3] || null,
+      },
+    };
+  };
+
   // Fetch only the products that are in the cart (fast targeted batch fetch)
   useEffect(() => {
     const cartKeys = Object.keys(cartItems || {}).filter((id) => {
@@ -247,8 +262,15 @@ export default function CheckoutPage() {
     });
     if (cartKeys.length === 0) return;
 
-    const missingIds = cartKeys.filter(
-      (id) => !products?.some((p) => String(p._id) === String(id))
+    const uniqueProductIds = Array.from(
+      new Set(
+        cartKeys
+          .map((id) => parseCartKey(id).productId)
+          .filter((id) => id && id !== 'undefined' && id !== 'null')
+      )
+    );
+    const missingIds = uniqueProductIds.filter(
+      (productId) => !products?.some((p) => String(p._id) === String(productId))
     );
     if (missingIds.length === 0) return;
 
@@ -280,11 +302,12 @@ export default function CheckoutPage() {
     const timer = setTimeout(async () => {
       try {
         const items = cartEntries.map(([id, value]) => {
+          const { productId } = parseCartKey(id);
           const quantity = typeof value === 'number' ? value : value?.quantity || 0;
-          const product = products.find((p) => p._id === id);
+          const product = products.find((p) => String(p._id) === String(productId));
           const price = resolveCartUnitPrice(product, value);
           return {
-            productId: id,
+            productId,
             quantity,
             price,
             name: product?.name || 'Product',
@@ -639,7 +662,8 @@ export default function CheckoutPage() {
       const storedPrice = Number(value?.price);
       if (qty <= 0 || bundleQty <= 1 || !Number.isFinite(storedPrice) || storedPrice <= 0) continue;
 
-      const product = products?.find((p) => String(p._id) === String(key));
+        const { productId } = parseCartKey(key);
+      const product = products?.find((p) => String(p._id) === String(productId));
       if (!product || !Array.isArray(product.variants) || product.variants.length === 0) continue;
 
       const match = product.variants.find((variant) => {
@@ -659,7 +683,7 @@ export default function CheckoutPage() {
       migrations.push({
         key,
         payload: {
-          productId: key,
+          productId,
           price: variantBundlePrice,
           variantOptions,
           ...(value?.offerToken ? { offerToken: value.offerToken } : {}),
@@ -685,7 +709,8 @@ export default function CheckoutPage() {
   }, [cartItems, products, dispatch, user, getToken]);
   
   for (const [key, value] of Object.entries(cartItems || {})) {
-    const product = products?.find((p) => String(p._id) === String(key));
+    const { productId } = parseCartKey(key);
+    const product = products?.find((p) => String(p._id) === String(productId));
     const qty = typeof value === 'number' ? value : value?.quantity || 0;
     if (product && qty > 0) {
       if (isPurchasableProduct(product)) {
@@ -708,7 +733,8 @@ export default function CheckoutPage() {
   }, [cartItems, products]);
 
   const cartDisplayItems = Object.entries(cartItems || {}).map(([key, value]) => {
-    const product = products?.find((p) => String(p._id) === String(key));
+    const { productId } = parseCartKey(key);
+    const product = products?.find((p) => String(p._id) === String(productId));
     const quantity = typeof value === 'number' ? value : value?.quantity || 0;
     const variantOptions = typeof value === 'object' ? value?.variantOptions : undefined;
     let maxQty = typeof product?.stockQuantity === 'number' ? Math.max(0, product.stockQuantity) : null;
@@ -972,7 +998,8 @@ export default function CheckoutPage() {
 
   const stockIssues = [];
   for (const [key, value] of Object.entries(cartItems || {})) {
-    const product = products?.find((p) => String(p._id) === String(key));
+    const { productId } = parseCartKey(key);
+    const product = products?.find((p) => String(p._id) === String(productId));
     const requestedQty = Math.min(Number(typeof value === 'number' ? value : value?.quantity || 0), 20);
     if (!product || requestedQty <= 0) continue;
 
@@ -2728,16 +2755,19 @@ export default function CheckoutPage() {
                 availableCoupons.map((cpn) => {
                   // Determine eligibility
                   // Convert cartItems object to array
-                  const cartItemsArray = Object.entries(cartItems || {}).map(([id, value]) => ({
-                    productId: id,
-                    quantity: typeof value === 'number' ? value : value?.quantity || 0,
-                    variantId: typeof value === 'object' ? value?.variantId : undefined
-                  }));
+                  const cartItemsArray = Object.entries(cartItems || {}).map(([id, value]) => {
+                    const { productId } = parseCartKey(id);
+                    return {
+                      cartKey: id,
+                      productId,
+                      quantity: typeof value === 'number' ? value : value?.quantity || 0,
+                    };
+                  });
                   
                   const itemsTotal = cartItemsArray.reduce((sum, item) => {
                     const product = products.find((p) => String(p._id) === String(item.productId));
                     if (!product) return sum;
-                    const entry = cartItems?.[item.productId];
+                    const entry = cartItems?.[item.cartKey];
                     const variantOptions = typeof entry === 'object' ? entry?.variantOptions : undefined;
                     const resolvedPrice = resolveCartUnitPrice(product, entry);
                     return sum + computeLineTotal(resolvedPrice, item.quantity, variantOptions?.bundleQty);
