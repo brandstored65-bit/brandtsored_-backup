@@ -375,8 +375,8 @@ export async function GET(request) {
                 }
                 console.log('[store/product GET] ✓ Migration complete');
             } catch (migErr) {
-                console.error('[store/product GET] ✗ Migration failed:', migErr.message);
-                throw new Error(`Product migration failed: ${migErr.message}`);
+                // Migration is a best-effort maintenance step. Do not block product listing on failure.
+                console.error('[store/product GET] ⚠ Migration failed, continuing without migration:', migErr.message);
             }
 
             try {
