@@ -4,6 +4,7 @@ import { useAuth } from '@/lib/useAuth';
 
 export const dynamic = 'force-dynamic'
 import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import { useDispatch } from "react-redux"
 import { fetchProducts as fetchProductsAction } from "@/lib/features/product/productSlice"
 import { toast } from "react-hot-toast"
@@ -17,6 +18,7 @@ import ProductForm from "../add-product/page"
 
 export default function StoreManageProducts() {
     const dispatch = useDispatch();
+    const router = useRouter();
 
     const { user, getToken, loading: authLoading } = useAuth();
 

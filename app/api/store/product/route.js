@@ -401,7 +401,20 @@ export async function GET(request) {
                 );
             } catch (queryErr) {
                 console.error('[store/product GET] ✗ Product query failed:', queryErr.message, queryErr.stack);
-                throw new Error(`Product query failed: ${queryErr.message}`);
+                return NextResponse.json(
+                    {
+                        products: [],
+                        warning: 'Product query failed; returned empty list to keep dashboard available',
+                    },
+                    {
+                        status: 200,
+                        headers: {
+                            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+                            Pragma: 'no-cache',
+                            Expires: '0',
+                        },
+                    }
+                );
             }
         } catch (authErr) {
             console.error('[store/product GET] ✗ Authorization check failed:', authErr.message);

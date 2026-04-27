@@ -29,6 +29,15 @@ export async function middleware(request) {
   if (publicEndpoints.includes(pathname) && request.method === 'GET') {
     return NextResponse.next();
   }
+
+  // Keep /api/store/product?noauth=true available for production diagnostics
+  if (
+    pathname === '/api/store/product' &&
+    request.method === 'GET' &&
+    request.nextUrl.searchParams.get('noauth') === 'true'
+  ) {
+    return NextResponse.next();
+  }
   
   const isApiProtected = apiProtectedRoutes.some((regex) => regex.test(pathname));
   if (!isApiProtected) return NextResponse.next();
