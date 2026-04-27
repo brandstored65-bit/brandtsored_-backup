@@ -4,17 +4,23 @@ import { useDispatch, useSelector } from "react-redux";
 
 // bulkVariants: array of variant objects with options.bundleQty and price fields
 // baseUnitPrice: per-unit price used when qty exceeds the highest bundle tier
+// productId can be the _cartKey (composite key with variants) or just the product ID
 const Counter = ({ productId, maxQty, bulkVariants = [], baseUnitPrice }) => {
 
     const { cartItems } = useSelector(state => state.cart);
     const dispatch = useDispatch();
 
-    const entry = cartItems[productId];
+    // The entry should be looked up using the full cartKey
+    const cartKey = productId;
+    const entry = cartItems[cartKey];
     const quantity = typeof entry === 'number' ? entry : entry?.quantity || 0;
     const price = typeof entry === 'object' ? entry?.price : undefined;
     const variantOptions = typeof entry === 'object' ? entry?.variantOptions : undefined;
     const offerToken = typeof entry === 'object' ? entry?.offerToken : undefined;
     const discountPercent = typeof entry === 'object' ? entry?.discountPercent : undefined;
+    
+    // Extract actual productId from cartKey for dispatch operations
+    const actualProductId = cartKey.split('|')[0];
 
     // Bundle tier logic
     const isBundleProduct = bulkVariants.length > 0;
@@ -45,31 +51,31 @@ const Counter = ({ productId, maxQty, bulkVariants = [], baseUnitPrice }) => {
     const switchToBundle = (targetBundle) => {
         const targetQty = Number(targetBundle.options.bundleQty);
         const targetPrice = Number(targetBundle.price);
-        dispatch(deleteItemFromCart({ productId }));
-        for (let i = 0; i < targetQty; i++) {
-            dispatch(addToCart({
-                productId,
-                price: targetPrice,
-                variantOptions: { ...variantOptions, bundleQty: targetQty },
-                ...(offerToken !== undefined ? { offerToken } : {}),
-                ...(discountPercent !== undefined ? { discountPercent } : {}),
-            }));
-        }
+        dispatch(deleteItemFromCart({ cartKey }));
+        // Use setQuantity to set the new quantity directly
+        dispatch(addToCart({
+            productId: actualProductId,
+            price: targetPrice,
+            variantOptions: { ...variantOptions, bundleQty: targetQty },
+            setQuantity: targetQty,
+            ...(offerToken !== undefined ? { offerToken } : {}),
+            ...(discountPercent !== undefined ? { discountPercent } : {}),
+        }));
     };
 
     // Switch to non-bundle mode: qty exceeds highest bundle, use per-unit price
     const switchToNonBundle = (newQty) => {
-        dispatch(deleteItemFromCart({ productId }));
-        for (let i = 0; i < newQty; i++) {
-            dispatch(addToCart({
-                productId,
-                price: resolvedUnitPrice,
-                // Keep color/size but clear bundleQty so it's treated as regular qty
-                variantOptions: variantOptions ? { ...variantOptions, bundleQty: null } : undefined,
-                ...(offerToken !== undefined ? { offerToken } : {}),
-                ...(discountPercent !== undefined ? { discountPercent } : {}),
-            }));
-        }
+        dispatch(deleteItemFromCart({ cartKey }));
+        // Use setQuantity to set the new quantity directly
+        dispatch(addToCart({
+            productId: actualProductId,
+            price: resolvedUnitPrice,
+            // Keep color/size but clear bundleQty so it's treated as regular qty
+            variantOptions: variantOptions ? { ...variantOptions, bundleQty: null } : undefined,
+            setQuantity: newQty,
+            ...(offerToken !== undefined ? { offerToken } : {}),
+            ...(discountPercent !== undefined ? { discountPercent } : {}),
+        }));
     };
 
     const addToCartHandler = () => {
@@ -85,7 +91,7 @@ const Counter = ({ productId, maxQty, bulkVariants = [], baseUnitPrice }) => {
         } else {
             // Non-bundle mode: increment qty by 1 keeping stored unit price
             dispatch(addToCart({
-                productId,
+                productId: actualProductId,
                 ...(price !== undefined ? { price } : {}),
                 ...(variantOptions !== undefined ? { variantOptions } : {}),
                 ...(offerToken !== undefined ? { offerToken } : {}),
@@ -98,7 +104,7 @@ const Counter = ({ productId, maxQty, bulkVariants = [], baseUnitPrice }) => {
     const removeFromCartHandler = () => {
         if (isInBundleMode) {
             if (isAtLowestBundle) {
-                dispatch(deleteItemFromCart({ productId }));
+                dispatch(deleteItemFromCart({ cartKey }));
             } else {
                 switchToBundle(sortedBundles[currentBundleIndex - 1]);
             }
@@ -113,9 +119,9 @@ const Counter = ({ productId, maxQty, bulkVariants = [], baseUnitPrice }) => {
                 }
             }
             if (newQty <= 0) {
-                dispatch(deleteItemFromCart({ productId }));
+                dispatch(deleteItemFromCart({ cartKey }));
             } else {
-                dispatch(removeFromCart({ productId }));
+                dispatch(removeFromCart({ cartKey }));
             }
         }
     };

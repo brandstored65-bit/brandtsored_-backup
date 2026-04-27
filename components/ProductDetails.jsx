@@ -614,25 +614,24 @@ const ProductDetails = ({ product: productProp, reviews = [], hideTitle = false,
         qty = 1;
       }
       // effPrice is the full bundle total; store it as-is so cart × quantity = correct subtotal
-      for (let i = 0; i < qty; i++) {
-        const payload = {
-          productId: product._id, 
-          price: effPrice,
-          variantOptions: {
-            color: selectedColor || null,
-            size: selectedSize || null,
-            bundleQty: selectedBundleQty || null
-          }
-        };
-        
-        // If this is a special offer, include the offer token
-        if (product.specialOffer?.offerToken) {
-          payload.offerToken = product.specialOffer.offerToken;
-          payload.discountPercent = product.specialOffer.discountPercent;
-        }
-        
-        dispatch(addToCart(payload));
+      const payload = {
+        productId: product._id, 
+        price: effPrice,
+        variantOptions: {
+          color: selectedColor || null,
+          size: selectedSize || null,
+          bundleQty: selectedBundleQty || null
+        },
+        setQuantity: qty
+      };
+      
+      // If this is a special offer, include the offer token
+      if (product.specialOffer?.offerToken) {
+        payload.offerToken = product.specialOffer.offerToken;
+        payload.discountPercent = product.specialOffer.discountPercent;
       }
+      
+      dispatch(addToCart(payload));
 
       trackCustomerBehavior({
         eventType: 'go_to_checkout',
@@ -660,25 +659,24 @@ const ProductDetails = ({ product: productProp, reviews = [], hideTitle = false,
       qty = 1;
     }
     // effPrice is the full bundle total; store it as-is so cart × quantity = correct subtotal
-    for (let i = 0; i < qty; i++) {
-      const payload = {
-        productId: product._id,
-        price: effPrice,
-        variantOptions: {
-          color: selectedColor || null,
-          size: selectedSize || null,
-          bundleQty: selectedBundleQty || null
-        }
-      };
-      
-      // If this is a special offer, include the offer token
-      if (product.specialOffer?.offerToken) {
-        payload.offerToken = product.specialOffer.offerToken;
-        payload.discountPercent = product.specialOffer.discountPercent;
-      }
-      
-      dispatch(addToCart(payload));
+    const payload = {
+      productId: product._id,
+      price: effPrice,
+      variantOptions: {
+        color: selectedColor || null,
+        size: selectedSize || null,
+        bundleQty: selectedBundleQty || null
+      },
+      setQuantity: qty
+    };
+    
+    // If this is a special offer, include the offer token
+    if (product.specialOffer?.offerToken) {
+      payload.offerToken = product.specialOffer.offerToken;
+      payload.discountPercent = product.specialOffer.discountPercent;
     }
+    
+    dispatch(addToCart(payload));
 
     pushDataLayerEvent('add_to_cart', {
       currency: 'AED',

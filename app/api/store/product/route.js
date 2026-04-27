@@ -2,6 +2,7 @@
 import imagekit from "@/configs/imageKit";
 import connectDB from '@/lib/mongodb';
 import Product from '@/models/Product';
+import Store from '@/models/Store';
 import authSeller from "@/middlewares/authSeller";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/firebase-admin";
@@ -317,14 +318,22 @@ export async function GET(request) {
         if (url.searchParams.get('noauth') === 'true') {
             console.log('[store/product GET] Bypassing auth for testing');
             const stores = await Store.find({}).limit(1).lean();
-            const storeId = stores[0]?._id.toString();
+            const storeId = stores[0]?._id?.toString();
             if (!storeId) {
-                return NextResponse.json({ error: "No stores found for testing" }, { status: 500 });
+                return NextResponse.json({ error: "No store available for testing" }, { status: 500 });
             }
             console.log('[store/product GET] Using storeId:', storeId);
             const products = await Product.find({ storeId }).sort({ createdAt: -1 }).lean();
-            console.log('[store/product GET] ✓ Fetched', products.length, 'products');
-            return NextResponse.json({ products }, { headers: { 'Cache-Control': 'no-store' } });
+            console.log('[store/product GET] ✓ Fetched', products.length, 'products (noauth)');
+            return NextResponse.json(
+                { products },
+                {
+                    status: 200,
+                    headers: {
+                        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0'
+                    }
+                }
+            );
         }
 
         const authHeader = request.headers.get('authorization');

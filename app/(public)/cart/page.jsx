@@ -153,8 +153,25 @@ export default function Cart() {
         let total = 0;
         const arr = [];
 
+        // Helper to parse composite key (productId|color|size|bundleQty)
+        const parseCartKey = (key) => {
+            const parts = key.split('|');
+            if (parts.length === 1) {
+                return { productId: parts[0], variantOptions: null };
+            }
+            return {
+                productId: parts[0],
+                variantOptions: {
+                    color: parts[1] || null,
+                    size: parts[2] || null,
+                    bundleQty: parts[3] || null
+                }
+            };
+        };
+
         for (const [key, value] of Object.entries(cartItems || {})) {
-            const product = products.find((p) => String(p._id) === String(key));
+            const { productId, variantOptions: parsedVariants } = parseCartKey(key);
+            const product = products.find((p) => String(p._id) === String(productId));
             const qty = typeof value === 'number' ? value : value?.quantity || 0;
             
             if (product && qty > 0) {
@@ -167,7 +184,7 @@ export default function Cart() {
                 }
             } else if (!product && qty > 0) {
                 // Product not found yet - keep cart row and wait for product fetch/sync.
-                console.warn('[Cart Page] Product not found in list:', key, 'qty:', qty);
+                console.warn('[Cart Page] Product not found in list:', productId, 'qty:', qty);
             }
         }
 

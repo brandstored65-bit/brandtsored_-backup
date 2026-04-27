@@ -65,7 +65,6 @@ export default function StoreManageProducts() {
 
     const fetchStoreProducts = async () => {
         try {
-             const token = await getToken()
              const { data } = await axios.get('/api/store/product?noauth=true')
              setProducts(data.products.sort((a, b)=> new Date(b.createdAt) - new Date(a.createdAt)))
         } catch (error) {
