@@ -297,11 +297,36 @@ export async function POST(request) {
             if (requestedQty <= 0) {
                 return NextResponse.json({ error: 'Quantity must be at least 1', id: item.id }, { status: 400 });
             }
+
+            // Safety fallback: infer bundle option from quantity when client misses variantOptions.
+            // This keeps server-side pricing aligned with checkout for bundle tiers.
+            let effectiveVariantOptions = (item.variantOptions && typeof item.variantOptions === 'object')
+                ? item.variantOptions
+                : null;
+            if ((!effectiveVariantOptions || Object.keys(effectiveVariantOptions).length === 0)
+                && Array.isArray(product.variants)
+                && product.variants.length > 0) {
+                const exactBundleCandidates = product.variants.filter((variant) => {
+                    const variantBundleQty = Number(variant?.options?.bundleQty || 0);
+                    const variantPrice = Number(variant?.price || 0);
+                    return variantBundleQty > 1
+                        && variantBundleQty === requestedQty
+                        && Number.isFinite(variantPrice)
+                        && variantPrice > 0;
+                });
+                if (exactBundleCandidates.length === 1) {
+                    effectiveVariantOptions = {
+                        ...exactBundleCandidates[0].options,
+                        bundleQty: Number(exactBundleCandidates[0].options?.bundleQty || requestedQty),
+                    };
+                }
+            }
+
             // If variantOptions provided, validate against matching variant stock; else product stockQuantity
             let availableQty = typeof product.stockQuantity === 'number' ? product.stockQuantity : 0;
             let matchedVariant = null;
-            if (item.variantOptions && Array.isArray(product.variants) && product.variants.length > 0) {
-                const { color, size, bundleQty } = item.variantOptions || {};
+            if (effectiveVariantOptions && Array.isArray(product.variants) && product.variants.length > 0) {
+                const { color, size, bundleQty } = effectiveVariantOptions || {};
                 const match = product.variants.find(v => {
                     const cOk = v.options?.color ? v.options.color === color : !color;
                     const sOk = v.options?.size ? v.options.size === size : !size;
@@ -309,7 +334,7 @@ export async function POST(request) {
                     return cOk && sOk && bOk;
                 });
                 if (!match) {
-                    return NextResponse.json({ error: 'Selected variant not found', id: item.id, variantOptions: item.variantOptions }, { status: 400 });
+                    return NextResponse.json({ error: 'Selected variant not found', id: item.id, variantOptions: effectiveVariantOptions }, { status: 400 });
                 }
                 matchedVariant = match;
                 availableQty = typeof match.stock === 'number' ? match.stock : availableQty;
@@ -322,7 +347,7 @@ export async function POST(request) {
             let finalPrice = Number(product.price) || 0;
             if (matchedVariant) {
                 const matchedVariantPrice = Number(matchedVariant.price);
-                const matchedBundleQty = Number(matchedVariant.options?.bundleQty || item.variantOptions?.bundleQty || 0);
+                const matchedBundleQty = Number(matchedVariant.options?.bundleQty || effectiveVariantOptions?.bundleQty || 0);
                 if (Number.isFinite(matchedVariantPrice) && matchedVariantPrice > 0) {
                     finalPrice = matchedBundleQty > 1
                         ? (matchedVariantPrice / matchedBundleQty)
@@ -375,6 +400,7 @@ export async function POST(request) {
             if (!ordersByStore.has(storeId)) ordersByStore.set(storeId, []);
             ordersByStore.get(storeId).push({ 
                 ...item, 
+                variantOptions: effectiveVariantOptions || item.variantOptions || null,
                 quantity: requestedQty, 
                 price: finalPrice,
                 appliedOffer: appliedOffer 

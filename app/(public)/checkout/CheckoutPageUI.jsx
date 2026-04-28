@@ -1444,7 +1444,7 @@ export default function CheckoutPage() {
       setPlacingOrder(true);
       try {
         const itemsFromStateCard = cartArray.map((item) => {
-          const value = cartItems?.[item._id];
+          const value = cartItems?.[item._cartKey || item._id] ?? cartItems?.[item._id];
           const qty = typeof value === 'number' ? value : value?.quantity || item.quantity || 0;
           const variantOptions = typeof value === 'object' ? value?.variantOptions : undefined;
           const offerToken = typeof value === 'object' ? value?.offerToken : undefined;
@@ -1590,7 +1590,7 @@ export default function CheckoutPage() {
       
       // Build items directly from cartItems to preserve variantOptions
       const itemsFromState = cartArray.map((item) => {
-        const value = cartItems?.[item._id];
+        const value = cartItems?.[item._cartKey || item._id] ?? cartItems?.[item._id];
         const qty = typeof value === 'number' ? value : value?.quantity || item.quantity || 0;
         const variantOptions = typeof value === 'object' ? value?.variantOptions : undefined;
         const offerToken = typeof value === 'object' ? value?.offerToken : undefined;
